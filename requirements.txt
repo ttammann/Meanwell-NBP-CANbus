@@ -1,0 +1,3 @@
+# Required Python packages
+python-can>=4.0
+flask>=2.0
