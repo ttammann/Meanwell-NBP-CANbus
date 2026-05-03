@@ -265,6 +265,122 @@ scenario it's designed for.
   the web UI's "Apply changes" wrap every batch in OFF / write / ON for
   this reason.
 
+## Notes from the field
+
+A few things that took real testing to figure out, plus some things in
+the manual that will trip you up.  Documenting them here so the next
+person doesn't have to repeat the work.
+
+### The `*TOE` bits gate the timeout itself, not just the status flag
+
+This is the big one.  The manual describes `CVTOE`, `CCTOE`, and `FVTOE`
+(curve_config high byte, bits 0–2) as "timeout indication enable" bits,
+which is genuinely ambiguous — it could mean either:
+
+1. The bit gates the timeout machinery itself (i.e. CV will only time
+   out if CVTOE is set), or
+2. The timeout always runs once you write a value into `curve_*_timeout`,
+   and these bits only gate whether the corresponding `*TOF` flag in
+   `CHG_STATUS` is raised.
+
+Interpretation (2) is what the *prose* in the manual suggests.
+Interpretation (1) is what the firmware actually does.
+
+Empirical evidence: with `curve_fv_timeout = 60` and `FVTOE = 0`
+(`curve_config = 0x0884`), the charger floated for 70+ minutes without
+timing out.  With `FVTOE = 1` (`curve_config = 0x0C84`), the charger cut
+off at exactly 60 minutes.  Same timeout register value, different bit,
+different behavior.
+
+**Implication**: setting any `curve_*_timeout` register without also
+setting the corresponding `*TOE` bit in `curve_config` is a no-op.  The
+web UI exposes the three TOE checkboxes inline next to each timeout
+field for exactly this reason — you can't have one without the other.
+
+### CV stage exits on taper without involving the timeout
+
+The CV stage doesn't need a timeout to end.  When the charging current
+naturally drops to roughly 10% of rated (about 8.5 A on the 1700-48 in
+practice — this threshold is firmware-internal and not exposed as a
+register), the CV stage completes and the charger transitions to either
+float (if `CVTSSE = 1` or via the `*TOE`/`CVTSSE` interaction described
+above) or cut-off (if `CVTSSE = 0`).
+
+For a typical LFP setup, leaving the CC and CV timeouts disabled (TOE
+bits clear) and only enabling the FV timeout is sufficient: CV ends
+naturally on taper, the charger goes into float, and the FV timeout
+gives the BMS a known-bounded top-balance window before cut-off.
+
+### `CURVE_TC` (taper current, B3) is not the CV-exit threshold
+
+The register named "taper current" *sounds* like it should be the
+threshold below which CV completes, but in practice the CV-exit
+threshold appears to be firmware-internal (~10% of rated).  Setting
+`CURVE_TC` to a different value did not change when CV ended.  The
+register's actual role in the firmware is unclear from the manual; we
+include it in the optimized profile at 5 A for completeness but don't
+rely on its exact value.
+
+### Manual chapter 6 has real typos — trust diagrams over prose
+
+Several issues in the CANBus protocol chapter cost real time.  Rely on
+the bit-position diagrams, not the prose descriptions, when they
+disagree:
+
+- **Three different bits all labeled "CCTOE" in prose** (page 52).  The
+  bit-position diagram correctly shows them as `CVTOE` (bit 0),
+  `CCTOE` (bit 1), `FVTOE` (bit 2).  The prose copy-pasted "CCTOE"
+  three times with mismatched descriptions.
+
+- **TCS values listed as `01 = -3mV`, `01 = -4mV`, `01 = -5mV`** —
+  the second and third should be `10` and `11`.
+
+- **CVTSSE and RSTE descriptions appear under SYSTEM_CONFIG** on
+  page 53, even though both bits belong to CURVE_CONFIG.  Easy to
+  miss.
+
+- **CURVE_CONFIG factory default is contradictory**: page 35 says
+  `0004h`, page 56 worked example says `0x0084`.  The latter (charger
+  mode + temp comp on) matches the behavior we observed.
+
+- **Timeout range is contradictory**: page 35 (CANBus value-range
+  table) says `60–64800` minutes, page 37 (NFC app section) says
+  `1–6000`.  CAN writes appear to accept the wider range; the app
+  enforces 60–64800.
+
+- **Register names differ between pages**: command list (page 27) calls
+  them `CURVE_CC / CURVE_CV / CURVE_FV / CURVE_TC`; value-range table
+  (page 62) calls them `CURVE_ICHG / CURVE_VBST / CURVE_VFLOAT /
+  CURVE_ITAPER`.  The CAN command codes are identical; only the names
+  vary.  This codebase uses the page-27 names.
+
+- **`VOUT_SET` shown as `0x0002`** in the page-62 value-range table —
+  pure typo, the correct code is `0x0020` (matches every other place
+  in the manual).
+
+- **`SYSTEM_CONFIG` table shows `CAN_CTRL` and `EEP_CONFIG` bits** that
+  are never described in the prose.  These appear to be reserved /
+  unused but are not documented as such.
+
+### `MFR_*` ASCII strings can include null padding
+
+The manufacturer-info registers (`0x80`–`0x88`) return up to 6 ASCII
+bytes per command, padded with `\x00`.  Two-half strings like the
+12-character serial number are read in two requests and concatenated.
+Implementations need to pace requests at ≥20 ms apart (manual section
+6.1) and validate that response frames echo the requested command code
+— without these guards, rapid back-to-back reads can return stale
+frames from previous requests, producing garbled output.
+
+### Empty / zero-padded MFR fields render literally
+
+Some units return `"000"` (literal ASCII zeros) or all-null bytes for
+fields like `MFR_LOCATION` or unpopulated parts of the serial.  The
+web UI treats values matching `^[0\s]+$` as placeholders and shows
+"unavailable" in italic instead, but the underlying bytes really are
+those values — the firmware appears not to distinguish "empty" from
+"zero" for these fields.
+
 ## License
 
 BSD 3-Clause — see `LICENSE`.

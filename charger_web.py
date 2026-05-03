@@ -532,6 +532,28 @@ INDEX_HTML = r"""<!DOCTYPE html>
     cursor: pointer; user-select: none;
     font-size: 13px; color: var(--ink-2);
   }
+  /* Compact variant for the inline checkboxes in the timeout-row table cells */
+  .check.inline-check {
+    font-size: 12px;
+    color: var(--ink-3);
+    gap: 6px;
+  }
+  .check.inline-check .box {
+    width: 14px; height: 14px;
+    border-width: 1.5px;
+  }
+  .check.inline-check .box::after {
+    width: 8px; height: 8px;
+  }
+  .check.inline-check.unloaded {
+    opacity: 0.35;
+    pointer-events: none;
+  }
+  table.settings .toe-cell {
+    padding-left: 12px;
+    text-align: left;
+    width: 110px;
+  }
   .check input { position: absolute; opacity: 0; pointer-events: none; }
   .check .box {
     width: 18px; height: 18px; border-radius: 4px;
@@ -931,6 +953,9 @@ const FRIENDLY_KEYS = ['curve_config', 'chg_rst_vbat'];
 const CFG_TCS_MASK = 0x000C;   // bits 2-3: temp comp slope (00=off, 01=-3mV)
 const CFG_CVTSSE   = 0x0020;   // bit 5:   CV completion behavior (0=cut off, 1=float)
 const CFG_CUVE     = 0x0080;   // bit 7:   charger mode
+const CFG_CVTOE    = 0x0100;   // bit 8:   CV timeout enable
+const CFG_CCTOE    = 0x0200;   // bit 9:   CC timeout enable
+const CFG_FVTOE    = 0x0400;   // bit 10:  FV timeout enable
 const CFG_RSTE     = 0x0800;   // bit 11:  restart-on-Vbat enable
 
 let registers = {};
@@ -1000,6 +1025,15 @@ function formatInputValue(value, reg) {
   return Number(value).toFixed(reg.scale < 1 ? 2 : 0);
 }
 
+// Maps timeout-register name -> the TOE checkbox id that gates it.
+// The checkbox is rendered inline in the timeout row, but it controls
+// the same curve_config bit the bottom config-row used to.
+const TIMEOUT_TOE = {
+  curve_cc_timeout: { id: 'cfg-cctoe', wrapId: 'check-cctoe-wrap', label: 'enabled' },
+  curve_cv_timeout: { id: 'cfg-cvtoe', wrapId: 'check-cvtoe-wrap', label: 'enabled' },
+  curve_fv_timeout: { id: 'cfg-fvtoe', wrapId: 'check-fvtoe-wrap', label: 'enabled' },
+};
+
 function buildSettingsTable() {
   const tbody = document.getElementById('settings');
   tbody.innerHTML = '';
@@ -1015,16 +1049,28 @@ function buildSettingsTable() {
     const range = reg.range || [];
     const rangeText = range.length === 2 ? `${range[0]} – ${range[1]}` : '';
     const minMax = (range.length === 2 && !isHex) ? `min="${range[0]}" max="${range[1]}"` : '';
+    // For timeout rows, render the corresponding TOE-enable checkbox inline.
+    const toe = TIMEOUT_TOE[name];
+    const toeCell = toe
+      ? `<td class="toe-cell"><label class="check inline-check unloaded" id="${toe.wrapId}">
+           <input type="checkbox" id="${toe.id}">
+           <span class="box"></span>
+           <span>${toe.label}</span>
+         </label></td>`
+      : `<td class="toe-cell"></td>`;
     row.innerHTML = `
       <td class="desc">${reg.desc}<span class="name">${name}</span></td>
       <td><input type="${inputType}" data-name="${name}" step="${step}" ${minMax}></td>
       <td class="unit-cell">${reg.unit || ''}</td>
       <td class="range-cell">${rangeText}</td>
+      ${toeCell}
       <td class="raw-cell" data-raw="${name}"></td>
     `;
     tbody.appendChild(row);
   }
-  tbody.querySelectorAll('input').forEach(inp => {
+  // Wire input events only on the editable register inputs (those have data-name);
+  // the inline TOE checkboxes are handled separately below.
+  tbody.querySelectorAll('input[data-name]').forEach(inp => {
     inp.addEventListener('input', () => {
       const name = inp.dataset.name;
       const orig = currentValues[name];
@@ -1053,6 +1099,18 @@ function buildSettingsTable() {
       updateDirtyCount();
     });
   });
+  // Wire the inline TOE checkboxes (cfg-cvtoe / cfg-cctoe / cfg-fvtoe) that
+  // we just rendered into the timeout rows.  Their dirty/build logic uses
+  // the same bitfield code path as the bottom config-row.
+  for (const toe of Object.values(TIMEOUT_TOE)) {
+    const el = document.getElementById(toe.id);
+    if (el) {
+      el.addEventListener('change', () => {
+        refreshConfigRowChangedClasses();
+        updateDirtyCount();
+      });
+    }
+  }
 }
 
 function updateDirtyCount() {
@@ -1090,6 +1148,9 @@ function decodeCurveConfig(raw) {
     tempCompOff:  (raw & CFG_TCS_MASK) === 0,   // ticked = comp disabled
     floatAfterCV: (raw & CFG_CVTSSE) !== 0,
     restartEn:    (raw & CFG_RSTE) !== 0,
+    cvTimeoutEn:  (raw & CFG_CVTOE) !== 0,
+    ccTimeoutEn:  (raw & CFG_CCTOE) !== 0,
+    fvTimeoutEn:  (raw & CFG_FVTOE) !== 0,
   };
 }
 
@@ -1099,6 +1160,9 @@ function readConfigRow() {
     tempCompOff:  document.getElementById('cfg-tempoff').checked,
     floatAfterCV: document.getElementById('cfg-float').checked,
     restartEn:    document.getElementById('cfg-restart').checked,
+    cvTimeoutEn:  document.getElementById('cfg-cvtoe').checked,
+    ccTimeoutEn:  document.getElementById('cfg-cctoe').checked,
+    fvTimeoutEn:  document.getElementById('cfg-fvtoe').checked,
     restartV:     parseFloat(document.getElementById('cfg-restart-v').value),
   };
 }
@@ -1109,6 +1173,9 @@ function paintConfigRow(values) {
   document.getElementById('cfg-tempoff').checked = values.tempCompOff;
   document.getElementById('cfg-float').checked   = values.floatAfterCV;
   document.getElementById('cfg-restart').checked = values.restartEn;
+  document.getElementById('cfg-cvtoe').checked   = values.cvTimeoutEn;
+  document.getElementById('cfg-cctoe').checked   = values.ccTimeoutEn;
+  document.getElementById('cfg-fvtoe').checked   = values.fvTimeoutEn;
   if (typeof values.restartV === 'number') {
     document.getElementById('cfg-restart-v').value = values.restartV.toFixed(1);
   }
@@ -1136,6 +1203,12 @@ function refreshConfigRowChangedClasses() {
     .classList.toggle('changed', cur.floatAfterCV !== orig.floatAfterCV);
   document.getElementById('check-restart-wrap')
     .classList.toggle('changed', cur.restartEn !== orig.restartEn);
+  document.getElementById('check-cvtoe-wrap')
+    .classList.toggle('changed', cur.cvTimeoutEn !== orig.cvTimeoutEn);
+  document.getElementById('check-cctoe-wrap')
+    .classList.toggle('changed', cur.ccTimeoutEn !== orig.ccTimeoutEn);
+  document.getElementById('check-fvtoe-wrap')
+    .classList.toggle('changed', cur.fvTimeoutEn !== orig.fvTimeoutEn);
   const vInp = document.getElementById('cfg-restart-v');
   vInp.classList.remove('invalid', 'changed');
   if (cur.restartEn) {
@@ -1149,7 +1222,12 @@ function refreshConfigRowChangedClasses() {
 }
 
 function configRowDirtyCount() {
+  // Checkboxes live in two DOM locations: bottom #config-row (charger
+  // mode, temp comp, float-after-CV, restart) and inline in #settings
+  // (the per-stage TOE enables that sit next to each timeout value).
+  // Both contribute to the curve_config write.
   return document.querySelectorAll('#config-row .check.changed').length
+       + document.querySelectorAll('#settings .check.changed').length
        + document.querySelectorAll('#config-row input.num.changed').length;
 }
 function configRowInvalidCount() {
@@ -1158,15 +1236,19 @@ function configRowInvalidCount() {
 
 function buildCurveConfigWrite() {
   // Compose a new curve_config 16-bit value from the friendly UI, preserving
-  // any bits we don't expose (CUVS, timeout enables, etc.).
+  // any bits we don't expose (CUVS preset selector, undocumented bits, etc.).
   if (currentCurveConfig === null) return null;
   const cur = readConfigRow();
-  const masksWeOwn = CFG_TCS_MASK | CFG_CVTSSE | CFG_CUVE | CFG_RSTE;
+  const masksWeOwn = CFG_TCS_MASK | CFG_CVTSSE | CFG_CUVE
+                   | CFG_CVTOE | CFG_CCTOE | CFG_FVTOE | CFG_RSTE;
   let v = currentCurveConfig & ~masksWeOwn;
   if (cur.chargerMode)  v |= CFG_CUVE;
   // tempCompOff ticked = bits 2-3 = 00; unticked = restore -3mV/C/cell (01)
   if (!cur.tempCompOff) v |= 0x0004;
   if (cur.floatAfterCV) v |= CFG_CVTSSE;
+  if (cur.cvTimeoutEn)  v |= CFG_CVTOE;
+  if (cur.ccTimeoutEn)  v |= CFG_CCTOE;
+  if (cur.fvTimeoutEn)  v |= CFG_FVTOE;
   if (cur.restartEn)    v |= CFG_RSTE;
   return v & 0xFFFF;
 }
@@ -1180,7 +1262,10 @@ function gatherConfigRowWrites() {
     cur.chargerMode  !== orig.chargerMode ||
     cur.tempCompOff  !== orig.tempCompOff ||
     cur.floatAfterCV !== orig.floatAfterCV ||
-    cur.restartEn    !== orig.restartEn;
+    cur.restartEn    !== orig.restartEn ||
+    cur.cvTimeoutEn  !== orig.cvTimeoutEn ||
+    cur.ccTimeoutEn  !== orig.ccTimeoutEn ||
+    cur.fvTimeoutEn  !== orig.fvTimeoutEn;
   if (cfgChanged) out.curve_config = buildCurveConfigWrite();
   if (cur.restartEn
       && !Number.isNaN(cur.restartV)
@@ -1192,6 +1277,8 @@ function gatherConfigRowWrites() {
 }
 
 // Wire up the five config-row controls
+// Wire up the bottom config-row controls (the inline TOE checkboxes
+// inside the table get their listeners from buildSettingsTable).
 ['cfg-charger', 'cfg-tempoff', 'cfg-float', 'cfg-restart'].forEach(id => {
   document.getElementById(id).addEventListener('change', () => {
     if (id === 'cfg-restart') applyRestartGroupState();
@@ -1353,6 +1440,9 @@ async function reloadFromCharger() {
       const decoded = decodeCurveConfig(currentCurveConfig);
       paintConfigRow({...decoded, restartV: currentRestartV ?? 48.0});
       document.getElementById('config-row').classList.remove('unloaded');
+      // Inline TOE checkboxes inside the table also become editable
+      document.querySelectorAll('.check.inline-check.unloaded')
+        .forEach(el => el.classList.remove('unloaded'));
     }
     updateDirtyCount();
     log('reloaded settings from charger', 'ok');
