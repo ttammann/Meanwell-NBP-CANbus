@@ -97,6 +97,9 @@ class FakeBus:
             code = self._last_request
             if code is None:
                 return None
+            # Clear it now so a subsequent recv (e.g. the drain loop in
+            # _request) returns None instead of replaying the same frame.
+            self._last_request = None
             # ASCII string registers (MFR_*) come from a separate map.
             if code in self._strings:
                 payload = [code, 0] + list(self._strings[code].ljust(6, b"\x00")[:6])
@@ -1283,9 +1286,12 @@ async function refreshStatus() {
 async function refreshDeviceInfo() {
   try {
     const d = await fetchJSON('/api/device_info');
+    // Some units return literal "000" or empty placeholders for unpopulated
+    // fields; treat those as empty so the UI shows the friendly fallback.
+    const isPlaceholder = v => !v || /^[0\s]+$/.test(String(v));
     const setVal = (id, v, fallback='unavailable') => {
       const el = document.getElementById(id);
-      if (v) {
+      if (!isPlaceholder(v)) {
         el.textContent = v;
         el.classList.remove('empty');
       } else {

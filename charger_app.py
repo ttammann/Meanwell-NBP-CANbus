@@ -73,7 +73,8 @@ FAULT_BITS = [
     (3, "OLP",     "over-load"),
     (4, "SHORT",   "short-circuit"),
     (5, "AC_FAIL", "AC abnormal"),
-    (6, "OP_OFF",  "output OFF"),
+    # Bit 6 (OP_OFF) is informational status, not a fault — output is just off.
+    # Already shown in the header master switch, so we don't repeat it here.
     (7, "HI_TEMP", "internal high temp"),
 ]
 
@@ -166,20 +167,42 @@ class MeanWellCharger:
         self._bus.send(msg)
 
     def _request(self, code):
-        """Send a 2-byte read request; return the data bytes after the
-        2-byte command echo, or None on timeout/CanError."""
+        """Send a 2-byte read request; return the data bytes that follow the
+        echoed command code in the response, or None on timeout/CanError or
+        if the response doesn't echo back this exact request code.
+
+        Per manual section 6.1, the protocol requires a matching command
+        echo in the response.  We validate it here to avoid mis-attributing
+        a stale or out-of-order frame to the wrong register read."""
         try:
+            # Drain up to a few stale frames that may be sitting in the
+            # receive buffer (e.g. unsolicited or from a previous request
+            # that timed out).  Bounded so a misbehaving bus can't hang us.
+            for _ in range(8):
+                stale = self._bus.recv(0)
+                if stale is None:
+                    break
             self._bus.send(can.Message(
                 arbitration_id=self._id,
                 data=[code & 0xFF, (code >> 8) & 0xFF],
                 is_extended_id=True,
             ))
-            resp = self._bus.recv(self._timeout)
+            # The response may not be the very next frame on a busy bus; loop
+            # until we either match our request code, timeout, or hit a sane
+            # cap on how many frames we'll skip.
+            deadline_skips = 5
+            while deadline_skips > 0:
+                resp = self._bus.recv(self._timeout)
+                if not resp or len(resp.data) < 2:
+                    return None
+                if resp.data[0] == (code & 0xFF) and resp.data[1] == ((code >> 8) & 0xFF):
+                    if len(resp.data) < 3:
+                        return None
+                    return list(resp.data[2:])
+                deadline_skips -= 1
+            return None
         except can.CanError:
             return None
-        if not resp or len(resp.data) < 3:
-            return None
-        return list(resp.data[2:])
 
     # --- generic register access -----------------------------------------
 
@@ -225,13 +248,18 @@ class MeanWellCharger:
     def device_info(self):
         """Return charger identity + always-readable info as a dict.
         Every key may be None if that read failed/timed out."""
+        # Manual section 6.1 requires >=20ms between requests.
+        def _read_paced(code, length):
+            time.sleep(0.025)
+            return self._read_string_block(code, length)
+
         # 12-char strings come from two 6-byte halves (B0B5 + B6B11).
-        mfr_id    = (self._read_string_block(0x80, 6) or "") + (self._read_string_block(0x81, 6) or "")
-        mfr_model = (self._read_string_block(0x82, 6) or "") + (self._read_string_block(0x83, 6) or "")
-        serial    = (self._read_string_block(0x84, 6) or "") + (self._read_string_block(0x85, 6) or "")
-        location  =  self._read_string_block(0x88, 3)
-        revision  =  self._read_string_block(0x87, 6)
-        date      =  self._read_string_block(0x86, 6)
+        mfr_id    = (_read_paced(0x80, 6) or "") + (_read_paced(0x81, 6) or "")
+        mfr_model = (_read_paced(0x82, 6) or "") + (_read_paced(0x83, 6) or "")
+        serial    = (_read_paced(0x84, 6) or "") + (_read_paced(0x85, 6) or "")
+        date      =  _read_paced(0x86, 6)
+        revision  =  _read_paced(0x87, 6)
+        location  =  _read_paced(0x88, 3)
         # Live but available without a battery: AC input + internal temp.
         _, vin  = self.read_register("read_vin")
         _, temp = self.read_register("read_temp")
