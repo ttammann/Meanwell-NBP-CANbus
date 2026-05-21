@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NPB charger console</title>
+<!-- Inline SVG favicon mirrors the brand mark so the browser tab matches
+     the on-page logo (and silences /favicon.ico 404s on every page load). -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M13 2 L4 14 h7 l-1 8 9-12 h-7 z'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="brand-wrap">
+      <div class="brand-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13 2 L4 14 h7 l-1 8 9-12 h-7 z"/>
+        </svg>
+      </div>
+      <div>
+        <div class="brand">npb <em>console</em></div>
+        <div class="subtitle">Mean Well intelligent battery charger</div>
+      </div>
+    </div>
+    <div></div>
+    <div class="header-actions">
+      <span id="conn" class="chip conn" title="">
+        <span class="dot"></span>
+        <span id="conn-text">connecting</span>
+        <span id="conn-lat" class="conn-lat"></span>
+      </span>
+      <div class="header-status" id="header-status" aria-label="Charger status"></div>
+      <label class="master">
+        <span class="lbl">output</span>
+        <span class="switch">
+          <input type="checkbox" id="onoff" disabled>
+          <span class="track"></span>
+        </span>
+      </label>
+    </div>
+  </header>
+
+  <!-- live SVG mirror of the manual 3-stage curve diagram -->
+  <div class="panel">
+    <h2>Preview <em>charge curve</em><span class="meta" id="preview-meta">3-stage · NPB-1700-48 · 48 V LFP</span></h2>
+    <div class="curve-preview" aria-hidden="true">
+      <svg id="curve-svg" viewBox="0 0 780 320" preserveAspectRatio="xMidYMid meet">
+        <!-- stage background tints + dividers + stage-name labels -->
+        <g id="curve-stages"></g>
+        <!-- grid lines + tick labels -->
+        <g id="curve-grid"></g>
+        <!-- axis titles: voltage on left, current on right -->
+        <g id="curve-axis-titles"></g>
+        <!-- area fills under each curve (colour comes from CSS) -->
+        <path id="curve-i-area" stroke="none"/>
+        <path id="curve-v-area" stroke="none"/>
+        <!-- the two curves (colour comes from CSS) -->
+        <path id="curve-i" fill="none" stroke-width="2.2"
+              stroke-linecap="round" stroke-linejoin="round"/>
+        <path id="curve-v" fill="none" stroke-width="2.2"
+              stroke-linecap="round" stroke-linejoin="round"/>
+        <!-- annotations (numeric labels with leader lines) -->
+        <g id="curve-annotations"></g>
+        <!-- animated traveller dots -->
+        <g id="curve-dot">
+          <circle id="curve-dot-i" r="4.5" stroke="white" stroke-width="2"/>
+          <circle id="curve-dot-v" r="4.5" stroke="white" stroke-width="2"/>
+        </g>
+      </svg>
+    </div>
+  </div>
+
+  <!-- charge curve registers: focal point -->
+  <div class="panel">
+    <h2>Settings <em>charge curve</em>
+      <span class="meta">
+        B0–B9 / C2
+        <span class="help-tip" tabindex="0" aria-label="How to use this form"
+              title="Edit a field to mark it as a change.  Empty fields are skipped on Apply — the charger keeps whatever it had.  Click Apply to write all changes in one batch.">?</span>
+      </span>
+    </h2>
+    <table class="settings"><tbody id="settings"></tbody></table>
+    <div class="config-row unloaded" id="config-row">
+      <span class="row-lbl">Config</span>
+      <label class="check" id="check-charger-wrap">
+        <input type="checkbox" id="cfg-charger">
+        <span class="box"></span>
+        <span>Charger mode</span>
+        <span class="hint">(off = constant V/I PSU)</span>
+      </label>
+      <label class="check" id="check-tcoff-wrap">
+        <input type="checkbox" id="cfg-tempoff">
+        <span class="box"></span>
+        <span>Temp comp off</span>
+        <span class="hint">(default −3 mV/°C/cell when unticked)</span>
+      </label>
+      <label class="check" id="check-float-wrap">
+        <input type="checkbox" id="cfg-float">
+        <span class="box"></span>
+        <span>Enter float after CV</span>
+        <span class="hint">(off = output cuts when CV tapers)</span>
+      </label>
+      <label class="check" id="check-restart-wrap">
+        <input type="checkbox" id="cfg-restart">
+        <span class="box"></span>
+        <span>Restart when V drops below</span>
+      </label>
+      <span class="restart-group disabled" id="restart-group">
+        <input class="num" type="number" id="cfg-restart-v" step="0.1" min="0" max="58.4" disabled>
+        <span class="unit">V</span>
+      </span>
+    </div>
+    <!-- Power-user view: raw curve_config hex, shown on demand.  All
+         non-friendly bits (CUVS preset selector, vendor reserved) are
+         preserved on write regardless of whether this is visible. -->
+    <details class="raw-hex" id="raw-hex">
+      <summary>Show raw <code>curve_config</code> hex</summary>
+      <div class="raw-hex-body">
+        <label>
+          curve_config =
+          <input type="text" id="cfg-raw" autocomplete="off" spellcheck="false">
+        </label>
+        <span class="meta" id="cfg-raw-decoded"></span>
+      </div>
+    </details>
+    <div class="actions">
+      <button class="primary" id="reload">Reload from charger</button>
+      <button id="discard" disabled>Discard changes</button>
+      <button id="apply" disabled>Apply changes</button>
+      <span class="spacer"></span>
+      <span class="pending" id="dirty-count"></span>
+      <span class="kbd-hint" aria-hidden="true">
+        <kbd>⌘</kbd><kbd>S</kbd> apply · <kbd>⌘</kbd><kbd>R</kbd> reload · <kbd>Esc</kbd> discard
+      </span>
+    </div>
+  </div>
+
+  <!-- Apply-confirmation modal: shows the diff and the OFF/ON cycle
+       warning before the user actually commits.  Built as plain
+       hidden HTML so screen readers can pick it up; main.js fills
+       #diff-body and toggles .open. -->
+  <div class="modal-backdrop" id="diff-modal" role="dialog" aria-modal="true" aria-labelledby="diff-title" hidden>
+    <div class="modal">
+      <h3 id="diff-title">Review changes before applying</h3>
+      <div id="diff-body" class="diff-body"><!-- filled by JS --></div>
+      <p class="modal-warn" id="diff-warn"></p>
+      <div class="modal-actions">
+        <button id="diff-cancel">Cancel</button>
+        <button class="primary" id="diff-confirm">Apply now</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- device info: model, serial, firmware -->
+  <div class="panel">
+    <h2>Device <em>info</em></h2>
+    <div class="info-grid">
+      <div class="info-cell">
+        <div class="lbl">Model</div>
+        <div class="val serif" id="info-model">–</div>
+      </div>
+      <div class="info-cell">
+        <div class="lbl">Manufacturer</div>
+        <div class="val" id="info-mfr">–</div>
+      </div>
+      <div class="info-cell">
+        <div class="lbl">Serial</div>
+        <div class="val" id="info-serial">–</div>
+      </div>
+      <div class="info-cell">
+        <div class="lbl">Firmware</div>
+        <div class="val" id="info-fw">–</div>
+      </div>
+      <div class="info-cell">
+        <div class="lbl">Manufacture date</div>
+        <div class="val" id="info-date">–</div>
+      </div>
+      <div class="info-cell">
+        <div class="lbl">Origin</div>
+        <div class="val" id="info-loc">–</div>
+      </div>
+    </div>
+    <div class="config-summary" id="config-summary">––</div>
+  </div>
+
+  <!-- activity log -->
+  <div class="panel">
+    <h2>Activity <em>log</em></h2>
+    <div id="log"></div>
+  </div>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

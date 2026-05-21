@@ -1,0 +1,867 @@
+  :root {
+    /* Two-tone muted palette: greyscale + one slate accent.
+       Functional warn/danger colours desaturated so they still read as
+       warnings but don't fight with the design. */
+    --bg:          #f6f6f7;   /* page background, very light warm grey */
+    --card:        #ffffff;   /* card / panel surface */
+    --card-soft:   #fafafa;   /* slight tint for inset surfaces */
+
+    --ink:         #1f2937;   /* slate-800, body text */
+    --ink-2:       #475569;   /* slate-600, headings + accent */
+    --ink-3:       #64748b;   /* slate-500, secondary text */
+    --ink-4:       #94a3b8;   /* slate-400, tertiary / disabled */
+    --line:        #e5e7eb;   /* gray-200, hairlines */
+    --line-2:      #d1d5db;   /* gray-300, input borders */
+
+    /* Single accent: slate-600.  Used for the active curve, primary
+       buttons, focus rings, and the brand mark. */
+    --accent:      #475569;
+    --accent-2:    #334155;   /* slate-700, hover state */
+    --accent-soft: #eef0f3;   /* very soft accent tint */
+
+    /* Functional colours — kept for "changed / invalid" UX signalling
+       but pulled toward grey so they don't clash. */
+    --warn:        #a16207;   /* yellow-700, muted amber */
+    --warn-soft:   #fef3c7;
+    --danger:      #991b1b;   /* red-800, deep muted red */
+    --danger-soft: #fee2e2;
+    --good:        #166534;   /* green-800, deep muted green */
+    --good-soft:   #dcfce7;
+
+    --shadow-sm:   0 1px 2px rgba(15, 23, 42, 0.05);
+    --shadow-md:   0 2px 8px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
+    --shadow-lg:   0 8px 24px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.04);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    color: var(--ink);
+    font-family: "Inter", system-ui, sans-serif;
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    min-height: 100vh;
+    padding: 32px 24px 60px;
+    background: var(--bg);
+  }
+  .container { max-width: 1240px; margin: 0 auto; }
+
+  /* ---------------- header ---------------- */
+  header {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 32px;
+    padding: 8px 4px 28px;
+    margin-bottom: 24px;
+  }
+  .brand-wrap { display: flex; align-items: center; gap: 16px; }
+  .brand-logo {
+    width: 44px; height: 44px;
+    border-radius: 10px;
+    background: var(--accent);
+    display: grid; place-items: center;
+    color: white;
+  }
+  .brand-logo svg { width: 22px; height: 22px; }
+  .brand {
+    font-family: "Fraunces", Georgia, serif;
+    font-weight: 500;
+    font-size: 28px;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    color: var(--ink);
+  }
+  .brand em {
+    font-style: italic; font-weight: 400;
+    color: var(--ink-2);
+  }
+  .subtitle {
+    font-size: 12px;
+    color: var(--ink-3);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-top: 7px;
+    font-weight: 500;
+  }
+  .header-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px 12px;
+    justify-content: flex-end;
+  }
+  /* Fault / charge-stage / system flags — flat pills, no section title. */
+  .header-status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    max-width: min(480px, 55vw);
+  }
+  .header-status .pill {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 10px;
+    border-radius: 100px;
+    background: var(--card-soft);
+    border: 1px solid var(--line);
+    color: var(--ink-2);
+    line-height: 1.2;
+    letter-spacing: 0.02em;
+  }
+  .header-status .pill.stage {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent-2);
+  }
+  .header-status .pill.ok {
+    background: var(--good-soft);
+    border-color: var(--good);
+    color: var(--good);
+  }
+  .header-status .pill.bad {
+    background: var(--danger-soft);
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+  .header-status .pill.dim {
+    color: var(--ink-4);
+    border-style: dashed;
+    font-weight: 500;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 12px; font-weight: 500;
+    color: var(--ink-2);
+    padding: 9px 16px;
+    background: var(--card);
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    border: 1px solid var(--line);
+    border-radius: 100px;
+    box-shadow: var(--shadow-sm);
+  }
+  .conn .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ink-4);
+    transition: all 0.2s;
+  }
+  .conn.ok  .dot { background: var(--good); }
+  .conn.err .dot { background: var(--danger); }
+  .conn.ok  { color: var(--good); }
+  .conn.err { color: var(--danger); }
+
+  /* ---------------- buttons ---------------- */
+  button {
+    font: 500 13px/1 "Inter", sans-serif;
+    cursor: pointer; padding: 10px 18px;
+    background: var(--card);
+    color: var(--ink);
+    border: 1px solid var(--line-2);
+    border-radius: 8px;
+    transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  }
+  button:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  button.primary {
+    background: var(--accent); color: white; border: 1px solid var(--accent);
+  }
+  button.primary:hover:not(:disabled) {
+    background: var(--accent-2); border-color: var(--accent-2); color: white;
+  }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* master switch */
+  .master {
+    display: inline-flex; align-items: center; gap: 12px;
+    padding: 8px 14px 8px 16px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-size: 11px; font-weight: 600;
+    color: var(--ink-2);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .master .lbl { user-select: none; }
+  .switch { position: relative; display: inline-block; width: 40px; height: 22px; }
+  .switch input { display: none; }
+  .switch .track {
+    position: absolute; inset: 0; cursor: pointer;
+    background: var(--line-2);
+    border-radius: 11px;
+    transition: background 0.2s ease;
+  }
+  .switch .track::after {
+    content: ""; position: absolute; top: 3px; left: 3px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: white;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    transition: transform 0.2s ease;
+  }
+  .switch input:checked + .track { background: var(--accent); }
+  .switch input:checked + .track::after { transform: translateX(18px); }
+  .switch input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
+
+  /* ---------------- panels ---------------- */
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 22px 26px 24px;
+    margin-bottom: 18px;
+    box-shadow: var(--shadow-sm);
+  }
+  .panel h2 {
+    font-family: "Fraunces", Georgia, serif;
+    font-weight: 500;
+    font-size: 19px;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    margin: 0 0 18px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 12px;
+  }
+  .panel h2 em {
+    font-style: italic;
+    color: var(--ink-2);
+  }
+  .panel h2 .meta {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--ink-4);
+    font-weight: 400;
+    font-style: normal;
+    letter-spacing: 0;
+    text-transform: uppercase;
+  }
+  /* ---------------- settings table (charge curve, focal point) -------- */
+  table.settings {
+    width: 100%; border-collapse: collapse;
+    font-size: 13px;
+  }
+  table.settings tr {
+    border-bottom: 1px solid var(--line);
+    transition: background 0.15s;
+  }
+  table.settings tr:last-child { border-bottom: none; }
+  table.settings tr:hover { background: var(--card-soft); }
+  table.settings td { padding: 13px 8px; vertical-align: middle; }
+  table.settings td.desc { color: var(--ink-2); font-weight: 500; }
+  table.settings td.desc .name {
+    font-family: "JetBrains Mono", monospace; font-size: 11px;
+    color: var(--ink-4); display: block; margin-top: 3px;
+    font-weight: 400;
+  }
+  table.settings input {
+    width: 130px; padding: 8px 12px;
+    background: var(--card);
+    color: var(--ink);
+    border: 1px solid var(--line-2); border-radius: 6px;
+    font-family: "JetBrains Mono", monospace;
+    font-variant-numeric: tabular-nums;
+    text-align: right; font-size: 13px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  table.settings input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  table.settings input.changed {
+    border-color: var(--warn); color: var(--warn);
+    background: var(--warn-soft);
+  }
+  table.settings input.invalid {
+    border-color: var(--danger); color: var(--danger);
+    background: var(--danger-soft);
+  }
+  table.settings input.skipped {
+    border-color: var(--line-2); color: var(--ink-4);
+    background: var(--card-soft);
+    border-style: dashed;
+  }
+  table.settings input.skipped::placeholder {
+    color: var(--ink-3);
+    font-style: italic;
+  }
+  table.settings .unit-cell {
+    color: var(--ink-3); padding-left: 10px;
+    font-size: 12px; font-weight: 600;
+    width: 40px;
+  }
+  table.settings .range-cell {
+    color: var(--ink-4);
+    font-family: "JetBrains Mono", monospace; font-size: 11px;
+    padding-left: 14px;
+  }
+  table.settings .raw-cell {
+    color: var(--ink-4);
+    font-family: "JetBrains Mono", monospace; font-size: 11px;
+    text-align: right;
+  }
+
+  .actions {
+    display: flex; align-items: center; gap: 12px;
+    margin-top: 20px; padding-top: 20px;
+    border-top: 1px solid var(--line);
+  }
+  .actions .spacer { flex: 1; }
+  .actions .pending {
+    font-size: 12px; font-weight: 600;
+    color: var(--warn);
+    padding: 5px 11px;
+    background: var(--warn-soft);
+    border: 1px solid var(--warn);
+    border-radius: 100px;
+  }
+  .actions .pending.invalid { color: var(--danger); background: var(--danger-soft); border-color: var(--danger); }
+  .actions .pending:empty { display: none; }
+
+  /* ---------------- charge config row (checkboxes + restart V) -------- */
+  .config-row {
+    display: flex; flex-wrap: wrap; align-items: center;
+    gap: 22px;
+    margin-top: 20px; padding: 20px 4px 4px;
+    border-top: 1px dashed var(--line-2);
+    transition: opacity 0.2s;
+  }
+  .config-row.unloaded {
+    opacity: 0.4;
+    pointer-events: none;
+  }
+  .config-row.unloaded::after {
+    content: "Reload from charger to edit";
+    font-family: "Fraunces", Georgia, serif;
+    font-style: italic;
+    font-size: 12px;
+    color: var(--ink-3);
+    pointer-events: auto;
+  }
+  .config-row .row-lbl {
+    font-family: "Fraunces", Georgia, serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: 15px;
+    color: var(--ink-2);
+    margin-right: 4px;
+  }
+  .check {
+    display: inline-flex; align-items: center; gap: 10px;
+    cursor: pointer; user-select: none;
+    font-size: 13px; color: var(--ink-2);
+    font-weight: 500;
+  }
+  .check.inline-check {
+    font-size: 12px;
+    color: var(--ink-3);
+    gap: 6px;
+    font-weight: 400;
+  }
+  .check.inline-check .box {
+    width: 15px; height: 15px;
+    border-width: 1.5px;
+  }
+  .check.inline-check .box::after {
+    width: 9px; height: 9px;
+  }
+  .check.inline-check.unloaded {
+    opacity: 0.35;
+    pointer-events: none;
+  }
+  table.settings .toe-cell {
+    padding-left: 12px;
+    text-align: left;
+    width: 110px;
+  }
+  .check input { position: absolute; opacity: 0; pointer-events: none; }
+  .check .box {
+    width: 18px; height: 18px; border-radius: 4px;
+    border: 1.5px solid var(--line-2);
+    background: var(--card);
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background 0.15s ease, border-color 0.15s ease;
+    flex-shrink: 0;
+  }
+  .check .box::after {
+    content: ""; width: 10px; height: 10px;
+    background: transparent;
+    clip-path: polygon(14% 50%, 0% 65%, 40% 100%, 100% 25%, 86% 12%, 38% 70%);
+    transition: background 0.15s;
+  }
+  .check:hover .box { border-color: var(--accent); }
+  .check input:checked + .box {
+    background: var(--accent); border-color: var(--accent);
+  }
+  .check input:checked + .box::after { background: white; }
+  .check input:focus-visible + .box {
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .check.changed .box { border-color: var(--warn); background: var(--warn-soft); }
+  .check.changed input:checked + .box { background: var(--warn); border-color: var(--warn); }
+  .check .hint {
+    color: var(--ink-4); font-size: 11px;
+    font-style: italic; font-family: "Fraunces", serif;
+    margin-left: 2px;
+    font-weight: 400;
+  }
+  .restart-group {
+    display: inline-flex; align-items: center; gap: 10px;
+    transition: opacity 0.2s;
+  }
+  .restart-group.disabled { opacity: 0.4; }
+  .restart-group input.num {
+    width: 80px; padding: 7px 12px;
+    background: var(--card);
+    color: var(--ink);
+    border: 1px solid var(--line-2); border-radius: 6px;
+    font-family: "JetBrains Mono", monospace;
+    font-variant-numeric: tabular-nums;
+    text-align: right; font-size: 13px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .restart-group input.num:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .restart-group input.num.changed {
+    border-color: var(--warn); color: var(--warn); background: var(--warn-soft);
+  }
+  .restart-group input.num.invalid {
+    border-color: var(--danger); color: var(--danger); background: var(--danger-soft);
+  }
+  .restart-group input.num:disabled {
+    cursor: not-allowed; background: var(--card-soft);
+  }
+  .restart-group .unit {
+    color: var(--ink-3); font-size: 12px; font-weight: 600;
+  }
+
+  /* ---------------- charge curve preview ---------------------------- */
+  .curve-preview {
+    width: 100%;
+    padding: 4px 2px 0;
+  }
+  .curve-preview svg {
+    width: 100%; height: auto;
+    display: block;
+    font-family: "Inter", sans-serif;
+  }
+  /* Curve palette: voltage = ink (dark slate), current = accent.
+     Stage backdrops are alternating warm-grey shades so the eye can still
+     tell the three regions apart without colour overload. */
+  .curve-preview .stage-bg {
+    transition: fill 0.3s ease;
+  }
+  .curve-preview .stage-bg.cc { fill: #f3f4f6; }   /* gray-100  */
+  .curve-preview .stage-bg.cv { fill: #ffffff; }
+  .curve-preview .stage-bg.fv { fill: #f3f4f6; }
+  .curve-preview .stage-bg.active.cc,
+  .curve-preview .stage-bg.active.cv,
+  .curve-preview .stage-bg.active.fv { fill: var(--accent-soft); }
+
+  .curve-preview .stage-divider {
+    stroke: var(--line-2);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+  }
+  .curve-preview .stage-label {
+    font-family: "Fraunces", Georgia, serif;
+    font-style: italic;
+    font-size: 14px;
+    font-weight: 500;
+    fill: var(--ink-2);
+  }
+  .curve-preview .stage-sub {
+    font-size: 10px;
+    fill: var(--ink-3);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+  .curve-preview .axis-tick {
+    font-size: 10px;
+    fill: var(--ink-3);
+    font-family: "JetBrains Mono", monospace;
+  }
+  .curve-preview .axis-title {
+    font-family: "Fraunces", Georgia, serif;
+    font-style: italic;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .curve-preview .axis-title.v { fill: var(--ink); }       /* voltage axis */
+  .curve-preview .axis-title.i { fill: var(--accent); }    /* current axis */
+  .curve-preview .grid-line {
+    stroke: var(--line);
+    stroke-width: 1;
+  }
+  .curve-preview .annotation-leader {
+    stroke: var(--ink-4);
+    stroke-width: 1;
+    stroke-dasharray: 2 2;
+    fill: none;
+  }
+  .curve-preview .annotation-pill {
+    fill: white;
+    stroke-width: 1.5;
+  }
+  .curve-preview .annotation-pill.i { stroke: var(--accent); }
+  .curve-preview .annotation-pill.v { stroke: var(--ink); }
+  .curve-preview .annotation-text {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    font-weight: 500;
+    fill: var(--ink);
+  }
+  .curve-preview .annotation-text .name {
+    fill: var(--ink-3);
+    font-size: 9px;
+  }
+  /* Curve paths -- solid colours, no gradients.  Voltage is the dark
+     "ink" curve, current is the accent. */
+  .curve-preview path#curve-v { stroke: var(--ink); }
+  .curve-preview path#curve-i { stroke: var(--accent); }
+  .curve-preview path#curve-v-area { fill: var(--ink); fill-opacity: 0.06; }
+  .curve-preview path#curve-i-area { fill: var(--accent); fill-opacity: 0.07; }
+  #curve-dot-i { fill: var(--accent); }
+  #curve-dot-v { fill: var(--ink); }
+  .curve-preview path#curve-i,
+  .curve-preview path#curve-v {
+    transition: d 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* ---------------- device info ---------------- */
+  .info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 16px 28px;
+  }
+  .info-cell .lbl {
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 5px;
+    font-weight: 600;
+  }
+  .info-cell .val {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 14px;
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .info-cell .val.empty {
+    font-family: "Fraunces", Georgia, serif;
+    font-style: italic;
+    color: var(--ink-4);
+    font-size: 13px;
+    font-weight: 400;
+  }
+  .info-cell .val.serif {
+    font-family: "Fraunces", Georgia, serif;
+    font-style: normal;
+    font-size: 18px;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+  }
+
+  .config-summary {
+    margin-top: 18px; padding-top: 16px;
+    border-top: 1px dashed var(--line-2);
+    font-size: 12px;
+    color: var(--ink-3);
+    line-height: 1.7;
+  }
+  .config-summary .key {
+    color: var(--ink); font-weight: 600;
+  }
+  .config-summary code {
+    color: var(--accent-2);
+    background: var(--accent-soft);
+    padding: 2px 8px; border-radius: 4px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  /* ---------------- log ---------------- */
+  #log {
+    font-family: "JetBrains Mono", monospace; font-size: 12px;
+    background: var(--card-soft);
+    border-radius: 8px;
+    padding: 14px 18px;
+    max-height: 220px; overflow-y: auto;
+    border: 1px solid var(--line);
+  }
+  #log .row {
+    padding: 4px 0; color: var(--ink-2);
+    display: flex; gap: 14px;
+  }
+  #log .row.err { color: var(--danger); }
+  #log .row.ok  { color: var(--good); }
+  #log .row.warn { color: var(--warn); }
+  #log .row .ts {
+    color: var(--ink-4); flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+  #log:empty::before {
+    content: "no activity yet";
+    color: var(--ink-4); font-style: italic;
+    font-family: "Fraunces", Georgia, serif;
+  }
+
+  /* ---------------- connection chip latency ---------------- */
+  .conn-lat {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--ink-4);
+    margin-left: 2px;
+  }
+  .conn-lat:empty { display: none; }
+
+  /* ---------------- help "?" tip ---------------- */
+  .help-tip {
+    display: inline-grid; place-items: center;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--ink-4); color: white;
+    font-family: "Inter", sans-serif;
+    font-size: 10px; font-weight: 600;
+    cursor: help;
+    margin-left: 8px;
+    transition: background 0.15s;
+  }
+  .help-tip:hover, .help-tip:focus { background: var(--accent); outline: none; }
+
+  /* ---------------- raw curve_config hex (power-user details) ---------- */
+  details.raw-hex {
+    margin-top: 14px;
+    border-top: 1px dashed var(--line-2);
+    padding-top: 12px;
+  }
+  details.raw-hex summary {
+    font-family: "Fraunces", Georgia, serif;
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-3);
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    padding: 4px 0;
+  }
+  details.raw-hex summary::-webkit-details-marker { display: none; }
+  details.raw-hex summary::before {
+    content: "▸";
+    display: inline-block;
+    width: 14px;
+    color: var(--ink-4);
+    transition: transform 0.15s;
+  }
+  details.raw-hex[open] summary::before { transform: rotate(90deg); }
+  details.raw-hex code {
+    font-family: "JetBrains Mono", monospace; font-size: 12px;
+    color: var(--ink);
+    background: var(--card-soft);
+    padding: 1px 6px; border-radius: 3px;
+  }
+  .raw-hex-body {
+    display: flex; align-items: baseline; gap: 14px;
+    flex-wrap: wrap;
+    padding: 10px 0 4px 14px;
+  }
+  .raw-hex-body label {
+    font-size: 12px; color: var(--ink-3);
+    font-family: "Fraunces", Georgia, serif; font-style: italic;
+  }
+  .raw-hex-body input {
+    width: 96px; padding: 6px 10px;
+    background: var(--card);
+    color: var(--ink);
+    border: 1px solid var(--line-2); border-radius: 6px;
+    font-family: "JetBrains Mono", monospace;
+    font-variant-numeric: tabular-nums;
+    text-align: right; font-size: 13px;
+  }
+  .raw-hex-body input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .raw-hex-body input.changed {
+    border-color: var(--warn); color: var(--warn); background: var(--warn-soft);
+  }
+  .raw-hex-body input.invalid {
+    border-color: var(--danger); color: var(--danger); background: var(--danger-soft);
+  }
+  .raw-hex-body .meta {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--ink-3);
+    flex: 1;
+    min-width: 200px;
+  }
+
+  /* ---------------- keyboard shortcut hints ---------------- */
+  .kbd-hint {
+    font-size: 11px;
+    color: var(--ink-4);
+    margin-left: 12px;
+  }
+  .kbd-hint kbd {
+    display: inline-block;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    padding: 1px 5px;
+    background: var(--card-soft);
+    border: 1px solid var(--line-2);
+    border-radius: 3px;
+    color: var(--ink-2);
+    margin: 0 1px;
+  }
+  @media (max-width: 720px) {
+    .kbd-hint { display: none; }
+  }
+
+  /* ---------------- writing\u2026 spinner on the Apply button -------- */
+  button.writing {
+    color: transparent !important;
+    position: relative;
+    pointer-events: none;
+  }
+  button.writing::after {
+    content: "";
+    position: absolute; inset: 0;
+    margin: auto;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.35);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  button.writing:not(.primary)::after {
+    border-color: rgba(71,85,105,0.25);
+    border-top-color: var(--accent);
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------------- diff-preview modal ---------------- */
+  .modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+    display: grid; place-items: center;
+    z-index: 50;
+    padding: 24px;
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+  }
+  .modal-backdrop[hidden] { display: none; }
+  .modal {
+    background: var(--card);
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow-lg);
+    max-width: 560px;
+    width: 100%;
+    max-height: 80vh;
+    overflow-y: auto;
+    padding: 26px 30px 22px;
+  }
+  .modal h3 {
+    font-family: "Fraunces", Georgia, serif;
+    font-weight: 500;
+    font-size: 20px;
+    letter-spacing: -0.01em;
+    margin: 0 0 16px;
+    color: var(--ink);
+  }
+  .diff-body {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card-soft);
+    padding: 4px 14px;
+    margin-bottom: 14px;
+  }
+  .diff-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: baseline;
+    padding: 8px 0;
+    gap: 16px;
+    border-bottom: 1px solid var(--line);
+    font-size: 13px;
+  }
+  .diff-row:last-child { border-bottom: none; }
+  .diff-row .label { color: var(--ink-2); font-weight: 500; }
+  .diff-row .label .name {
+    display: block;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    color: var(--ink-4);
+    margin-top: 2px;
+    font-weight: 400;
+  }
+  .diff-row .val {
+    font-family: "JetBrains Mono", monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .diff-row .val .old { color: var(--ink-4); text-decoration: line-through; }
+  .diff-row .val .arrow { color: var(--ink-4); margin: 0 6px; }
+  .diff-row .val .new { color: var(--accent-2); font-weight: 600; }
+  .modal-warn {
+    margin: 0 0 14px;
+    padding: 10px 14px;
+    background: var(--warn-soft);
+    border: 1px solid var(--warn);
+    border-radius: 6px;
+    color: var(--warn);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .modal-warn:empty { display: none; }
+  .modal-warn strong { color: var(--warn); }
+  .modal-actions {
+    display: flex; justify-content: flex-end; gap: 10px;
+  }
+
+  /* ---------------- mobile responsiveness ---------------- */
+  @media (max-width: 720px) {
+    body { padding: 16px 12px 40px; }
+    header {
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+    .header-actions { justify-content: flex-start; }
+    .header-status { max-width: none; }
+    .panel { padding: 18px 16px 18px; }
+    .panel h2 {
+      font-size: 17px;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .panel h2 .meta { font-size: 10px; }
+    table.settings { font-size: 12px; }
+    table.settings td { padding: 10px 4px; }
+    table.settings input { width: 96px; padding: 6px 8px; font-size: 12px; }
+    table.settings .range-cell,
+    table.settings .raw-cell { font-size: 10px; }
+    table.settings .toe-cell { width: auto; padding-left: 6px; }
+    .actions { flex-wrap: wrap; gap: 8px; }
+    .actions button { padding: 8px 14px; font-size: 12px; }
+    .config-row { gap: 14px; }
+    .config-row .check { font-size: 12px; }
+    .modal { padding: 18px 18px 16px; max-height: 88vh; }
+  }
+
+  /* The curve preview's traveller dot uses a JS-driven rAF loop. */
