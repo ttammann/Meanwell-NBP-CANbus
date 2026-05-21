@@ -25,7 +25,7 @@ from functools import wraps
 from logging.handlers import RotatingFileHandler
 
 import can
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
 from charger_app import (
     MeanWellCharger, REGISTERS, RANGES,
@@ -188,9 +188,19 @@ def _security_headers(resp):
 # routes
 # ---------------------------------------------------------------------------
 
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/preview")
+@app.route("/preview.html")
+def preview_page():
+    """Static UI with mocked API (preview-mock.js); same port as the live app."""
+    return send_from_directory(_ROOT, "preview.html")
 
 
 @app.route("/api/registers")

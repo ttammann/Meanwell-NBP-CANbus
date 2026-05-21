@@ -189,13 +189,29 @@ tested without anything attached.
 
 ### Static preview (`preview.html`)
 
-Open the same UI in a browser without starting Flask — useful for layout
-and CSS work:
+The mock UI uses `preview-mock.js` and does not talk to CAN even when
+served by Flask.
+
+**If `charger_web.py` is already running** (e.g. on port 8088), open the
+preview on that same port — do not start another server on 8088:
+
+```text
+http://127.0.0.1:8088/preview.html
+```
+
+(`python3 -m http.server 8088` while Flask is on 8088 will not work: the
+port is taken and `/preview.html` is not a file listing.)
+
+**If nothing is listening**, from the repo root:
 
 ```bash
-python3 -m http.server 8088
-# → http://127.0.0.1:8088/preview.html
+python3 serve_preview.py
+# → http://127.0.0.1:8090/preview.html  (root / redirects here)
 ```
+
+Or any free port: `python3 -m http.server 8090` then open
+`/preview.html` (must run the command in the project root so `static/`
+resolves).
 
 `preview.html` loads `static/css/main.css` and `static/js/main.js` plus
 `preview-data.js` (register metadata from `charger_app`) and
@@ -238,7 +254,8 @@ python3 charger_web.py --interface slcan --channel /dev/tty.usbmodem1101
 | `charger_app.py`          | charger client + command-line interface                  |
 | `charger_web.py`          | Flask web UI (imports `charger_app`)                     |
 | `templates/index.html`    | single-page HTML for the web UI                          |
-| `preview.html`            | static UI preview (no Flask/CAN; see below)              |
+| `preview.html`            | static UI preview (mock API; see below)                  |
+| `serve_preview.py`        | local static server on port 8090 when Flask is not up    |
 | `static/css/main.css`     | UI styles                                                |
 | `static/js/main.js`       | UI behaviour: curve preview, form, SSE stream            |
 | `static/js/preview-mock.js` | fetch/EventSource shim for `preview.html`              |
