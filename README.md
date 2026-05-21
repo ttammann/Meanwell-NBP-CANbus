@@ -187,6 +187,42 @@ accepts writes that round-trip through in-memory state.  All endpoints
 behave identically to the real hardware, so the UI can be developed and
 tested without anything attached.
 
+### Static preview (`preview.html`)
+
+Open the same UI in a browser without starting Flask — useful for layout
+and CSS work:
+
+```bash
+python3 -m http.server 8088
+# → http://127.0.0.1:8088/preview.html
+```
+
+`preview.html` loads `static/css/main.css` and `static/js/main.js` plus
+`preview-data.js` (register metadata from `charger_app`) and
+`preview-mock.js` (in-memory `/api/*` + SSE).  Writes update the mock
+state only; no CAN traffic.  Regenerate `static/js/preview-data.js` after changing `REGISTERS` /
+`RANGES` (same values as `FakeBus` demo reads):
+
+```bash
+.venv/bin/python <<'PY'
+import json
+from pathlib import Path
+from charger_app import REGISTERS, RANGES
+registers = {n: {"code": r.code, "scale": r.scale, "size": r.size,
+    "unit": r.unit, "writable": r.writable, "desc": r.desc,
+    "range": list(RANGES[n]) if n in RANGES else None}
+    for n, r in REGISTERS.items()}
+reads = {"operation": {"raw": 1, "value": 1}, "curve_cc": {"raw": 1500, "value": 15.0},
+    "curve_cv": {"raw": 5520, "value": 55.2}, "curve_fv": {"raw": 5520, "value": 55.2},
+    "curve_tc": {"raw": 500, "value": 5.0}, "curve_cc_timeout": {"raw": 900, "value": 900},
+    "curve_cv_timeout": {"raw": 60, "value": 60}, "curve_fv_timeout": {"raw": 60, "value": 60},
+    "curve_config": {"raw": 2180, "value": 2180}, "chg_rst_vbat": {"raw": 4800, "value": 48.0}}
+Path("static/js/preview-data.js").write_text(
+    "window.PREVIEW_REGISTERS = " + json.dumps(registers, indent=2) + ";\n"
+    + "window.PREVIEW_READS = " + json.dumps(reads, indent=2) + ";\n")
+PY
+```
+
 When you're ready to drive a real charger from a Mac, get a USB-CAN
 adapter (Canable / Geschwister Schneider / PEAK / Kvaser) and run with
 the matching python-can backend:
@@ -202,8 +238,11 @@ python3 charger_web.py --interface slcan --channel /dev/tty.usbmodem1101
 | `charger_app.py`          | charger client + command-line interface                  |
 | `charger_web.py`          | Flask web UI (imports `charger_app`)                     |
 | `templates/index.html`    | single-page HTML for the web UI                          |
+| `preview.html`            | static UI preview (no Flask/CAN; see below)              |
 | `static/css/main.css`     | UI styles                                                |
 | `static/js/main.js`       | UI behaviour: curve preview, form, SSE stream            |
+| `static/js/preview-mock.js` | fetch/EventSource shim for `preview.html`              |
+| `static/js/preview-data.js` | demo register metadata + reads (generated from app)    |
 | `tests/test_decoders.py`  | pytest: bitfield decoders                                |
 | `tests/test_runtime.py`   | pytest: FakeBus, write_many, SSE broadcaster             |
 | `requirements.txt`        | runtime Python dependencies                              |
