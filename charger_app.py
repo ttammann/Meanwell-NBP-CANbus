@@ -262,30 +262,38 @@ class MeanWellCharger:
         chunk = bytes(data[:length])
         return chunk.split(b"\x00", 1)[0].decode("ascii", errors="replace").strip() or None
 
-    def device_info(self):
+    def device_info(self, read_hook=None):
         """Return charger identity + always-readable info as a dict.
-        Every key may be None if that read failed/timed out."""
-        # Manual section 6.1 requires >=20ms between requests.
-        def _read_paced(code, length):
-            time.sleep(0.025)
-            return self._read_string_block(code, length)
+        Every key may be None if that read failed/timed out.
+
+        Optional ``read_hook(fn)`` wraps each CAN read (e.g. the web UI
+        acquires a lock per read and sleeps between reads *outside* the
+        lock so SSE / Apply are not blocked for the whole ~250 ms)."""
+        def _do_read(fn):
+            if read_hook is not None:
+                return read_hook(fn)
+            time.sleep(self.INTER_WRITE_DELAY_S)
+            return fn()
+
+        def _read_string(code, length):
+            return _do_read(lambda: self._read_string_block(code, length))
 
         # 12-char strings come from two 6-byte halves (B0B5 + B6B11).
-        mfr_id    = (_read_paced(0x80, 6) or "") + (_read_paced(0x81, 6) or "")
-        mfr_model = (_read_paced(0x82, 6) or "") + (_read_paced(0x83, 6) or "")
-        serial    = (_read_paced(0x84, 6) or "") + (_read_paced(0x85, 6) or "")
-        date      =  _read_paced(0x86, 6)
-        revision  =  _read_paced(0x87, 6)
-        location  =  _read_paced(0x88, 3)
+        mfr_id    = (_read_string(0x80, 6) or "") + (_read_string(0x81, 6) or "")
+        mfr_model = (_read_string(0x82, 6) or "") + (_read_string(0x83, 6) or "")
+        serial    = (_read_string(0x84, 6) or "") + (_read_string(0x85, 6) or "")
+        date      =  _read_string(0x86, 6)
+        revision  =  _read_string(0x87, 6)
+        location  =  _read_string(0x88, 3)
         # Live but available without a battery: AC input + internal temp.
         # Same best-effort policy as the string registers: don't let one
         # transient CAN error sink the whole device_info call.
         try:
-            _, vin  = self.read_register("read_vin")
+            _, vin  = _do_read(lambda: self.read_register("read_vin")[1])
         except can.CanError:
             vin = None
         try:
-            _, temp = self.read_register("read_temp")
+            _, temp = _do_read(lambda: self.read_register("read_temp")[1])
         except can.CanError:
             temp = None
         return {
@@ -340,6 +348,11 @@ class MeanWellCharger:
         was_on = None
         if cycle:
             raw, _ = self.read_register("operation")
+            if raw is None:
+                raise ValueError(
+                    "cannot determine output state (operation read failed); "
+                    "refusing write with power-cycle — retry or use --no-cycle "
+                    "only if you are certain the output is OFF")
             was_on = (raw == 1)
             if was_on:
                 self.set_off()
@@ -518,7 +531,9 @@ def main(argv=None):
                          can_id=args.can_id,
                          interface=args.interface) as mw:
         if args.command == "check":
-            print("OK" if mw.bus_ok() else "NO RESPONSE")
+            ok = mw.bus_ok()
+            print("OK" if ok else "NO RESPONSE")
+            return 0 if ok else 1
 
         elif args.command == "on":
             mw.set_on()

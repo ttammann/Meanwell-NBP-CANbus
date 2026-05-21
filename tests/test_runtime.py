@@ -15,16 +15,18 @@ import time
 import pytest
 import can
 
-from charger_app import MeanWellCharger, REGISTERS, RANGES
-from charger_web import FakeBus, StateBroadcaster
+from charger_app import MeanWellCharger, REGISTERS, RANGES, main as cli_main
+from charger_web import FakeBus, StateBroadcaster, app, _parse_write_request
+import charger_web
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_charger(bus=None):
-    return MeanWellCharger(can_id=0xC0103, bus=bus or FakeBus(), recv_timeout=0.5)
+def _make_charger(bus=None, recv_timeout=0.5):
+    return MeanWellCharger(can_id=0xC0103, bus=bus or FakeBus(),
+                          recv_timeout=recv_timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +155,34 @@ class TestWriteManyCyclePreservation:
         mw.write_many([("curve_fv", 55.2)], cycle=False)
         raw, _ = mw.read_register("operation")
         assert raw == 0
+
+    def test_write_many_refuses_cycle_when_operation_unknown(self):
+        """If we cannot read operation, do not guess output state and write."""
+        mw = _make_charger()
+        orig = mw.read_register
+
+        def fake_read(name):
+            if name == "operation":
+                return None, None
+            return orig(name)
+
+        mw.read_register = fake_read
+        with pytest.raises(ValueError, match="operation read failed"):
+            mw.write_many([("curve_cc", 18.0)])
+
+    def test_write_many_allows_no_cycle_when_operation_unknown(self):
+        mw = _make_charger()
+        orig = mw.read_register
+
+        def fake_read(name):
+            if name == "operation":
+                return None, None
+            return orig(name)
+
+        mw.read_register = fake_read
+        was_on = mw.write_many([("curve_cc", 18.0)], cycle=False)
+        assert was_on is None
+        assert mw.read_register("curve_cc")[1] == pytest.approx(18.0, rel=1e-3)
 
     def test_write_validation_happens_inside_cycle(self):
         """If a value in a batch is invalid, we must still re-energise the
@@ -352,3 +382,141 @@ class TestStateBroadcaster:
         while not q.empty():
             items.append(q.get_nowait())
         assert items[-1].get("operation") == 99
+
+
+# ---------------------------------------------------------------------------
+# CLI exit codes
+# ---------------------------------------------------------------------------
+
+
+class TestCliExitCodes:
+    def test_check_exits_zero_when_bus_ok(self, monkeypatch):
+        class _Stub:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def bus_ok(self): return True
+
+        monkeypatch.setattr(
+            "charger_app.MeanWellCharger", lambda **kw: _Stub())
+        assert cli_main(["check"]) == 0
+
+    def test_check_exits_one_when_no_response(self, monkeypatch):
+        class _Stub:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def bus_ok(self): return False
+
+        monkeypatch.setattr(
+            "charger_app.MeanWellCharger", lambda **kw: _Stub())
+        assert cli_main(["check"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# POST /api/write validation
+# ---------------------------------------------------------------------------
+
+
+class TestParseWriteRequest:
+    def test_rejects_non_object_body(self):
+        with pytest.raises(ValueError, match="JSON object"):
+            _parse_write_request(["curve_cc", 15])
+
+    def test_rejects_non_object_settings(self):
+        with pytest.raises(ValueError, match="settings must be an object"):
+            _parse_write_request({"settings": [("curve_cc", 15)]})
+
+    def test_rejects_null_settings(self):
+        with pytest.raises(ValueError, match="settings must be an object"):
+            _parse_write_request({"settings": None})
+
+    def test_rejects_empty_settings(self):
+        with pytest.raises(ValueError, match="must not be empty"):
+            _parse_write_request({"settings": {}})
+
+    def test_rejects_unknown_register(self):
+        with pytest.raises(ValueError, match="unknown register"):
+            _parse_write_request({"settings": {"nope": 1}})
+
+    def test_rejects_read_only_register(self):
+        with pytest.raises(ValueError, match="read-only"):
+            _parse_write_request({"settings": {"read_vout": 50}})
+
+    def test_accepts_valid_payload(self):
+        settings, cycle = _parse_write_request(
+            {"settings": {"curve_cc": 15.0}, "cycle": False})
+        assert settings == [("curve_cc", 15.0)]
+        assert cycle is False
+
+
+@pytest.fixture
+def web_client(monkeypatch, patched_lock):
+    monkeypatch.setattr(charger_web, "charger",
+                        _make_charger(recv_timeout=0.05))
+    monkeypatch.setattr(charger_web, "_bus_args", {"demo": True})
+    app.config["TESTING"] = True
+    return app.test_client()
+
+
+class TestApiWriteEndpoint:
+    def test_null_settings_returns_400(self, web_client):
+        r = web_client.post("/api/write",
+                            json={"settings": None})
+        assert r.status_code == 400
+        assert "object" in r.get_json()["error"]
+
+    def test_empty_settings_returns_400(self, web_client):
+        r = web_client.post("/api/write", json={"settings": {}})
+        assert r.status_code == 400
+
+    def test_valid_write_round_trips(self, web_client):
+        r = web_client.post("/api/write",
+                            json={"settings": {"curve_cc": 16.0},
+                                  "cycle": False})
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["ok"] is True
+        assert body["post"]["curve_cc"]["value"] == pytest.approx(16.0, rel=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# CAN bus auto-reconnect
+# ---------------------------------------------------------------------------
+
+
+class TestBusReconnect:
+    def test_try_reconnect_swaps_charger_instance(self, monkeypatch, patched_lock):
+        old = _make_charger()
+        monkeypatch.setattr(charger_web, "charger", old)
+        monkeypatch.setattr(charger_web, "_bus_args", {
+            "channel": "can0",
+            "bitrate": 250000,
+            "can_id": 0xC0103,
+            "interface": "socketcan",
+            "demo": False,
+        })
+        created = []
+
+        def _factory(**kw):
+            mw = _make_charger(recv_timeout=0.05)
+            created.append(mw)
+            return mw
+
+        monkeypatch.setattr(charger_web, "MeanWellCharger", _factory)
+        b = StateBroadcaster()
+        b._err_streak = 4
+        b._try_reconnect()
+        assert len(created) == 1
+        assert charger_web.charger is created[0]
+        assert charger_web.charger is not old
+
+    def test_try_reconnect_skipped_in_demo(self, monkeypatch, patched_lock):
+        old = _make_charger()
+        monkeypatch.setattr(charger_web, "charger", old)
+        monkeypatch.setattr(charger_web, "_bus_args", {"demo": True})
+        created = []
+        monkeypatch.setattr(charger_web, "MeanWellCharger",
+                            lambda **kw: created.append(1) or old)
+        b = StateBroadcaster()
+        b._try_reconnect()
+        assert created == []
+        assert charger_web.charger is old

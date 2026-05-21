@@ -71,7 +71,7 @@ on source changes.  See `docker-compose.yml` for tunable env vars.
 ```bash
 python3 charger_app.py --help        # full help with examples
 python3 charger_app.py list          # list every register, no CAN traffic
-python3 charger_app.py check         # probe the bus
+python3 charger_app.py check         # probe the bus (exit 0 = OK, 1 = no response)
 python3 charger_app.py read          # read every register
 python3 charger_app.py read curve_cc curve_cv curve_fv
 python3 charger_app.py status        # decoded fault / charge / config bitfields
@@ -277,7 +277,7 @@ pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 
-60 tests, runs in <1 s.  No CAN hardware required.
+76 tests, runs in <1 s.  No CAN hardware required.
 
 ## HTTP API (all JSON)
 

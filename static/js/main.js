@@ -729,11 +729,9 @@ function tickCurveDot(now) {
 // ---------- connection stream (SSE) ---------------------------------------
 //
 // One long-lived EventSource replaces what used to be a 5-second poll on
-// /api/read?names=operation.  The server pushes a 'state' event whenever
-// the operation register changes or the CAN bus link toggles, and a
-// silent SSE comment heartbeat in between so we can tell "stream is
-// alive, charger just hasn't said anything new" apart from "stream has
-// stalled".
+// /api/read?names=operation.  The server pushes a `state` event every ~3 s
+// (shared CAN poller) plus SSE `: ping` comment lines between events so
+// proxies don't treat the connection as idle.
 
 let stream = null;
 let streamStallTimer = null;
@@ -771,11 +769,9 @@ function startStream() {
     }
   });
 
-  // The server also emits ': tick\n\n' comments between state events.
-  // The browser doesn't dispatch a JS event for those, but the
-  // underlying TCP keepalive does prove the stream is healthy.  Our
-  // watchdog resets on every state event; if state events stop firing
-  // (e.g. the charger went silent), the watchdog flips us to "no response".
+  // `: ping` comments keep the TCP stream warm; the browser does not
+  // dispatch a JS event for them.  The watchdog resets on every `state`
+  // event — if those stop (charger silent / server hung), we show no response.
   stream.addEventListener('open', resetWatchdog);
 
   stream.onerror = () => {

@@ -141,6 +141,39 @@ class FakeBus:
 # helpers
 # ---------------------------------------------------------------------------
 
+def _parse_write_request(body):
+    """Validate POST /api/write JSON; return (settings, cycle) or raise ValueError."""
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        raise ValueError("request body must be a JSON object")
+    raw_settings = body.get("settings", {})
+    if not isinstance(raw_settings, dict):
+        raise ValueError("settings must be an object")
+    if not raw_settings:
+        raise ValueError("settings must not be empty")
+    settings = []
+    for name, value in raw_settings.items():
+        if name not in REGISTERS:
+            raise ValueError(f"unknown register {name!r}")
+        if not REGISTERS[name].writable:
+            raise ValueError(f"register {name!r} is read-only")
+        settings.append((name, value))
+    cycle = body.get("cycle", True)
+    if not isinstance(cycle, bool):
+        cycle = bool(cycle)
+    return settings, cycle
+
+
+def _device_info_read_hook():
+    """Pace the CAN bus and hold _lock only for each individual read."""
+    def hook(fn):
+        time.sleep(MeanWellCharger.INTER_WRITE_DELAY_S)
+        with _lock:
+            return fn()
+    return hook
+
+
 def safe_can(fn):
     """Catch CAN/value errors and turn them into JSON 4xx/5xx responses."""
     @wraps(fn)
@@ -244,22 +277,23 @@ def api_read():
 @safe_can
 def api_status():
     out = {}
-    with _lock:
-        for key, bits in (("fault_status",  FAULT_BITS),
-                          ("chg_status",    CHG_STATUS_BITS),
-                          ("system_status", SYSTEM_STATUS_BITS)):
+    for key, bits in (("fault_status",  FAULT_BITS),
+                      ("chg_status",    CHG_STATUS_BITS),
+                      ("system_status", SYSTEM_STATUS_BITS)):
+        with _lock:
             raw, _ = charger.read_register(key)
-            out[key] = {
-                "raw":   raw,
-                "flags": _decode_bits(raw or 0, bits) if raw is not None else [],
-            }
-        for key, decoder in (("curve_config",  _decode_curve_config),
-                             ("system_config", _decode_system_config)):
+        out[key] = {
+            "raw":   raw,
+            "flags": _decode_bits(raw or 0, bits) if raw is not None else [],
+        }
+    for key, decoder in (("curve_config",  _decode_curve_config),
+                         ("system_config", _decode_system_config)):
+        with _lock:
             raw, _ = charger.read_register(key)
-            out[key] = {
-                "raw":     raw,
-                "decoded": decoder(raw) if raw is not None else None,
-            }
+        out[key] = {
+            "raw":     raw,
+            "decoded": decoder(raw) if raw is not None else None,
+        }
     return jsonify(out)
 
 
@@ -271,10 +305,8 @@ def api_write():
     the UI detect rounding / clamping / silent failures instead of
     optimistically displaying "saved!" for a value the firmware rejected.
     """
-    body = request.get_json(force=True) or {}
-    raw_settings = body.get("settings", {})
-    cycle = bool(body.get("cycle", True))
-    settings = list(raw_settings.items())
+    body = request.get_json(force=True, silent=True)
+    settings, cycle = _parse_write_request(body)
     with _lock:
         was_on = charger.write_many(settings, cycle=cycle)
         # Re-read so the caller sees what actually committed.  Same lock
@@ -313,8 +345,7 @@ def api_off():
 @safe_can
 def api_device_info():
     """Identity + always-readable info (no battery / output current required)."""
-    with _lock:
-        return jsonify(charger.device_info())
+    return jsonify(charger.device_info(read_hook=_device_info_read_hook()))
 
 
 @app.route("/api/operation")
@@ -513,6 +544,9 @@ class StateBroadcaster:
 _broadcaster: StateBroadcaster | None = None
 
 
+SSE_KEEPALIVE_S = 1.5   # comment pings between state events (proxy idle timeouts)
+
+
 def _stream_events(q: queue.Queue):
     """Generator: yield SSE-formatted bytes for one subscriber.
 
@@ -521,7 +555,11 @@ def _stream_events(q: queue.Queue):
     underlying TCP close (GeneratorExit) doesn't leak the queue."""
     try:
         while True:
-            payload = q.get()
+            try:
+                payload = q.get(timeout=SSE_KEEPALIVE_S)
+            except queue.Empty:
+                yield ": ping\n\n"
+                continue
             if payload is None:
                 return  # broadcaster shutting down
             yield f"event: state\ndata: {json.dumps(payload)}\n\n"
@@ -642,6 +680,8 @@ def main():
 
     log.info("Starting on http://%s:%d", args.host, args.port)
     try:
+        # Built-in server: leanest fit for a single local user on a Pi/LAN.
+        # threaded=True so SSE + Apply can overlap; no gunicorn/nginx needed.
         app.run(host=args.host, port=args.port, threaded=True, debug=False,
                 use_reloader=False)
     finally:
