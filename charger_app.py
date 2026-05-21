@@ -168,41 +168,54 @@ class MeanWellCharger:
 
     def _request(self, code):
         """Send a 2-byte read request; return the data bytes that follow the
-        echoed command code in the response, or None on timeout/CanError or
-        if the response doesn't echo back this exact request code.
+        echoed command code in the response.
 
-        Per manual section 6.1, the protocol requires a matching command
-        echo in the response.  We validate it here to avoid mis-attributing
-        a stale or out-of-order frame to the wrong register read."""
+        Failure semantics — important for the SSE broadcaster to behave
+        correctly:
+          * a response that times out / doesn't echo our code returns None
+            (the bus is healthy, the charger just didn't answer this read)
+          * a `can.CanError` from `_bus.send` or the response `_bus.recv`
+            propagates up to the caller (the bus itself is broken — USB
+            unplug, slcand crashed, kernel socket closed, etc.).  The
+            broadcaster catches that and triggers a bus rebuild.
+
+        The drain-pre-read is wrapped in its own try/except: errors there
+        are not actionable and we'd rather just attempt the real request
+        than fail the call because of buffer-cleanup quirks.
+
+        Per manual §6.1, the protocol requires a matching command echo in
+        the response.  We validate it here to avoid mis-attributing a stale
+        or out-of-order frame to the wrong register read."""
+        # Drain up to a few stale frames that may be sitting in the
+        # receive buffer (unsolicited frames, or leftovers from a previous
+        # request that timed out).  Bounded so a misbehaving bus can't
+        # hang us; errors here are intentionally swallowed.
         try:
-            # Drain up to a few stale frames that may be sitting in the
-            # receive buffer (e.g. unsolicited or from a previous request
-            # that timed out).  Bounded so a misbehaving bus can't hang us.
             for _ in range(8):
                 stale = self._bus.recv(0)
                 if stale is None:
                     break
-            self._bus.send(can.Message(
-                arbitration_id=self._id,
-                data=[code & 0xFF, (code >> 8) & 0xFF],
-                is_extended_id=True,
-            ))
-            # The response may not be the very next frame on a busy bus; loop
-            # until we either match our request code, timeout, or hit a sane
-            # cap on how many frames we'll skip.
-            deadline_skips = 5
-            while deadline_skips > 0:
-                resp = self._bus.recv(self._timeout)
-                if not resp or len(resp.data) < 2:
-                    return None
-                if resp.data[0] == (code & 0xFF) and resp.data[1] == ((code >> 8) & 0xFF):
-                    if len(resp.data) < 3:
-                        return None
-                    return list(resp.data[2:])
-                deadline_skips -= 1
-            return None
         except can.CanError:
-            return None
+            pass  # drain hiccup is fine; the real send/recv below is what matters
+
+        # send + response recv — errors here propagate so the broadcaster
+        # can distinguish "bus broken" from "no answer".
+        self._bus.send(can.Message(
+            arbitration_id=self._id,
+            data=[code & 0xFF, (code >> 8) & 0xFF],
+            is_extended_id=True,
+        ))
+        deadline_skips = 5
+        while deadline_skips > 0:
+            resp = self._bus.recv(self._timeout)
+            if not resp or len(resp.data) < 2:
+                return None
+            if resp.data[0] == (code & 0xFF) and resp.data[1] == ((code >> 8) & 0xFF):
+                if len(resp.data) < 3:
+                    return None
+                return list(resp.data[2:])
+            deadline_skips -= 1
+        return None
 
     # --- generic register access -----------------------------------------
 
@@ -238,8 +251,12 @@ class MeanWellCharger:
 
     def _read_string_block(self, code, length):
         """MFR_* registers return up to 6 ASCII bytes per command code,
-        padded with 0x00.  Strip nulls and decode."""
-        data = self._request(code)
+        padded with 0x00.  Strip nulls and decode.  Bus errors are
+        squashed to None — device_info is best-effort by design."""
+        try:
+            data = self._request(code)
+        except can.CanError:
+            return None
         if data is None:
             return None
         chunk = bytes(data[:length])
@@ -261,8 +278,16 @@ class MeanWellCharger:
         revision  =  _read_paced(0x87, 6)
         location  =  _read_paced(0x88, 3)
         # Live but available without a battery: AC input + internal temp.
-        _, vin  = self.read_register("read_vin")
-        _, temp = self.read_register("read_temp")
+        # Same best-effort policy as the string registers: don't let one
+        # transient CAN error sink the whole device_info call.
+        try:
+            _, vin  = self.read_register("read_vin")
+        except can.CanError:
+            vin = None
+        try:
+            _, temp = self.read_register("read_temp")
+        except can.CanError:
+            temp = None
         return {
             "manufacturer": mfr_id.strip()    or None,
             "model":        mfr_model.strip() or None,
@@ -283,24 +308,54 @@ class MeanWellCharger:
         self._send(0x00, [0x01])
 
     def bus_ok(self):
-        raw, _ = self.read_register("operation")
+        # CanError ("bus broken") is the strongest possible "not OK"; the
+        # CLI `check` subcommand wants a simple yes/no, not a stack trace.
+        try:
+            raw, _ = self.read_register("operation")
+        except can.CanError:
+            return False
         return raw is not None and raw in (0, 1)
 
     # --- batched writes ---------------------------------------------------
 
+    # Manual section 6.1 requires >=20 ms between successive requests.
+    # The previous value (50 ms) was conservative cargo-cult; 25 ms is
+    # comfortably within spec and makes a 7-register Apply visibly snappier
+    # (~175 ms instead of ~350 ms blocking _lock in the request handler).
+    INTER_WRITE_DELAY_S = 0.025
+
     def write_many(self, settings, cycle=True):
-        """Write a list of (name, value) settings.  When cycle=True, wraps
-        the writes in a single OFF/ON pair so that B0..B9 take effect
-        (manual: those registers only commit while remote is OFF)."""
+        """Write a list of (name, value) settings.
+
+        B0..B9 only commit while the remote output is OFF (manual §6.5), so
+        we briefly cycle OFF/ON around the writes.  The original output
+        state is *preserved*: if the user had the output OFF before Apply,
+        we leave it OFF afterwards instead of silently energising the
+        charger.  This is a real safety property — a connected battery
+        suddenly seeing charge current is not OK.
+
+        Returns the original operation state (0/1) so callers can surface
+        the cycle in the UI (or skip it entirely on a read-only preview).
+        """
+        was_on = None
         if cycle:
-            self.set_off()
+            raw, _ = self.read_register("operation")
+            was_on = (raw == 1)
+            if was_on:
+                self.set_off()
+                time.sleep(self.INTER_WRITE_DELAY_S)
         try:
             for name, value in settings:
                 self.write_register(name, value)
-                time.sleep(0.05)
+                time.sleep(self.INTER_WRITE_DELAY_S)
         finally:
-            if cycle:
+            # Only re-energise if the user already had it on.  If the
+            # output was off (or we couldn't determine state), leave it
+            # off — the writes still commit because B0..B9 don't need
+            # the output to be on, only "not on while writing".
+            if cycle and was_on:
                 self.set_on()
+        return was_on
 
     def set_restart_voltage(self, v):
         """Enable restart-on-Vbat and set the trigger voltage.  0x0884 in

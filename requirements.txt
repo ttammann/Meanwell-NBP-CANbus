@@ -1,3 +1,9 @@
-# Required Python packages
-python-can>=4.0
-flask>=2.0
+# Runtime dependencies for the NPB charger CLI + web UI.
+#
+# `~=` pins to the current minor version (compatible release): patch
+# updates allowed, minor / major bumps require an explicit change here.
+# This keeps `pip install -r requirements.txt` reproducible across
+# rebuilds without freezing every transitive dependency (use
+# `pip freeze > requirements.lock` for a hermetic build if you need one).
+python-can~=4.6
+flask~=3.1

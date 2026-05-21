@@ -6,16 +6,6 @@ around a 16-cell LiFePO4 (LFP) battery on an NPB-1700-48, but everything
 range-related lives in one dictionary at the top of `charger_app.py` so
 adapting to a different chemistry or model is a one-file edit.
 
-## Files
-
-| file              | purpose                                                |
-|-------------------|--------------------------------------------------------|
-| `charger_app.py`  | charger client + command-line interface                |
-| `charger_web.py`  | Flask web UI (imports `charger_app`)                   |
-| `requirements.txt`| Python dependencies                                    |
-| `preview.html`    | static preview of the web UI (no server / no hardware) |
-| `README.md`       | this file                                              |
-
 ## Quick start
 
 ```bash
@@ -33,6 +23,48 @@ python3 charger_web.py
 # Web UI on macOS or any machine without CAN hardware (simulated charger)
 python3 charger_web.py --demo
 ```
+
+## Docker
+
+A small Python image is included.  Three compose profiles cover the
+common deployment shapes:
+
+```bash
+# 1. Demo / dev — no CAN hardware needed, runs anywhere (incl. macOS).
+docker compose --profile demo up --build
+# -> http://localhost:8080
+
+# 2. SocketCAN on a Linux host (kernel-native CAN driver, OR a USB-CAN
+#    adapter already wrapped into can0 via slcand).  The container uses
+#    host networking to share the host's can0 interface.
+#
+#    a) Native CAN (Raspberry Pi MCP2515, BeagleBone, Jetson, PEAK PCAN…)
+sudo ip link set can0 up type can bitrate 250000
+#
+#    b) USB-CAN via slcand (Canable, CANtact, generic slcan firmware)
+sudo slcand -o -c -s5 /dev/ttyACM0 can0   # -s5 = 250 kbit/s
+sudo ip link set can0 up
+#
+#    Then the same compose command for either (a) or (b):
+docker compose --profile charger up -d --build
+# overrides via env: NPB_CHANNEL=can1 NPB_BITRATE=500000 NPB_CAN_ID=0xC0103
+
+# 3. USB-CAN adapter with NO host-side slcand — python-can speaks the
+#    slcan protocol directly over the tty.  Mutually exclusive with the
+#    'charger' USB-CAN setup above: don't run slcand if you use this
+#    profile (it would hold the tty open).  Works on macOS too.
+NPB_USB_DEVICE=/dev/ttyACM0 NPB_USB_INTERFACE=slcan \
+  docker compose --profile usb-can up -d --build
+```
+
+In short: profile **`charger`** wants `can0` to already exist as a real
+SocketCAN interface (you set it up however you like — native driver,
+slcand, vcan); profile **`usb-can`** wants a raw `/dev/tty*` it can
+drive itself via python-can's `slcan` backend.  Both end up talking to
+the same physical CAN bus.
+
+The image is non-root, ~80 MB, and `docker compose ... up` will rebuild
+on source changes.  See `docker-compose.yml` for tunable env vars.
 
 ## Command-line interface
 
@@ -78,20 +110,50 @@ python3 charger_web.py [--demo] [--host 0.0.0.0] [--port 8080] [CAN options]
 
 Then open `http://<host>:8080`.
 
-The page is split into five sections, top to bottom:
+The UI is deliberately configuration-only — the charger is not assumed
+to be connected to a battery while you're talking to it, so there's no
+live-telemetry panel.  Four sections, top to bottom:
 
-1. **Charge curve** — focal point.  Editable table of the bulk current,
-   CV/FV voltage, taper, and three stage timeouts; below it a friendly row
-   of checkboxes for `curve_config` (charger mode, temp comp, restart-on-low)
-   plus a restart voltage input that auto-greys when restart is off.
-2. **Status row** — slim coloured pill showing charge stage (idle, CC, CV,
-   float, fully charged, fault) plus inline chips for any active flags.
-3. **Live readings** — `V_in`, internal temp, `V_out`, `I_out`, computed
-   power.  `V_out` / `I_out` / power show "standby" when no current is
-   flowing — they're only meaningful while charging.
-4. **Device info** — model, manufacturer, serial, firmware, manufacture date,
-   origin (read from the `MFR_*` ASCII registers, always available).
-5. **Activity log** — running record of reads, writes, errors.
+1. **Preview charge curve** — live SVG mirror of the manual's 3-stage
+   diagram (page 44).  Stages labelled *bulk / absorption / float*;
+   voltage and current axes with rotated titles; charcoal + slate
+   curves.  Annotation pills show `CURVE_CC/CV/FV/TC` and redraw on
+   every keystroke.  Stage-1 voltage stays flat then knees sharply to
+   CV (LFP shape).  A traveller dot animates along the curves.
+2. **Settings charge curve** — editable table + friendly `curve_config`
+   checkboxes + optional raw-hex editor for power users.  **Apply**
+   opens a confirmation modal listing every change and whether the
+   output will be power-cycled (only if it was ON).  **Discard** /
+   **Esc** revert pending edits.  Empty fields are skipped on Apply
+   (see the `?` hint).  Keyboard: **⌘/Ctrl+S** apply, **Esc** discard.
+3. **Device info** — model, serial, firmware, etc. from `MFR_*` registers.
+4. **Activity log** — persisted in `localStorage` across refreshes.
+
+The header shows **connected** (with CAN latency), **status pills** from
+`/api/status` (CCM, CVM, OTP, DC_OK, … — hover for the full label), and
+the **output** switch.
+
+**Connection status** uses **Server-Sent Events** (`/api/stream`): one
+shared server-side CAN poller fans out to every browser tab (1 read per
+3 s total, not per client).  The chip shows `connected · <latency ms>`
+and only flips to disconnected after **two** consecutive failed reads.
+The server auto-reconnects the python-can bus after repeated `CanError`s
+(USB unplug / `slcand` restart) without restarting the container.
+
+**Safety on Apply:** `write_many()` preserves the pre-write output
+state — if the output was OFF, Apply leaves it OFF instead of silently
+turning it back on.  The API re-reads every written register and
+reports `post` values so the UI can flag firmware clamping.
+
+Styling is a two-tone grey palette (white cards on `#f6f6f7` background,
+single slate accent).  Templates live in `templates/`, assets in
+`static/` — no JS framework.
+
+**Single-system focus.**  This UI assumes a 48 V / 55.2 V 16S LFP
+system on an NPB-1700-48.  The `RANGES` dict in `charger_app.py`
+enforces the absolute voltage limits (42.0 – 58.4 V) and the curve
+preview's Y-axes are fixed to that window.  Editing those would
+require coordinated changes in both files.
 
 **The page starts blank.**  Click **Reload from charger** to populate
 the table with what's currently in the unit; from there, edit any row
@@ -133,7 +195,35 @@ the matching python-can backend:
 python3 charger_web.py --interface slcan --channel /dev/tty.usbmodem1101
 ```
 
-### HTTP API (all JSON)
+## Files
+
+| file                      | purpose                                                  |
+|---------------------------|----------------------------------------------------------|
+| `charger_app.py`          | charger client + command-line interface                  |
+| `charger_web.py`          | Flask web UI (imports `charger_app`)                     |
+| `templates/index.html`    | single-page HTML for the web UI                          |
+| `static/css/main.css`     | UI styles                                                |
+| `static/js/main.js`       | UI behaviour: curve preview, form, SSE stream            |
+| `tests/test_decoders.py`  | pytest: bitfield decoders                                |
+| `tests/test_runtime.py`   | pytest: FakeBus, write_many, SSE broadcaster             |
+| `requirements.txt`        | runtime Python dependencies                              |
+| `requirements-dev.txt`    | adds `pytest` on top of `requirements.txt`               |
+| `Dockerfile` + `docker-compose.yml` | containerised deployment (demo / real CAN / USB) |
+| `README.md`               | this file                                                |
+
+## Tests
+
+Bitfield decoders, `FakeBus` round-trips, `write_many` cycle preservation,
+range validation, and the SSE `StateBroadcaster` all have unit tests:
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
+60 tests, runs in <1 s.  No CAN hardware required.
+
+## HTTP API (all JSON)
 
 | route                  | method | purpose                                       |
 |------------------------|--------|-----------------------------------------------|
