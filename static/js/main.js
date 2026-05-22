@@ -38,6 +38,7 @@ let hasSuggestedPreview = false;
 let suggestedDefaultsTimer = null;
 let hasReloadedFromCharger = false;
 let demoAutoReloadDone = false;
+let demoSettingsInitStarted = false;
 let _reloadInFlight = false;
 let _reloadQueued = false;
 let _applyingSuggestedDefaults = false;
@@ -145,6 +146,30 @@ function updateOnoffHint(connected) {
 function hideReloadBanner() {
   const b = document.getElementById('reload-banner');
   if (b) b.hidden = true;
+}
+
+function showReloadBanner() {
+  const b = document.getElementById('reload-banner');
+  if (b) b.hidden = false;
+}
+
+let sseWasConnected = false;
+
+/** CAN/SSE dropped — baseline is stale; require Reload before Apply. */
+function handleCanDisconnected() {
+  if (!sseWasConnected && !hasReloadedFromCharger) return;
+  const hadBaseline = hasReloadedFromCharger;
+  sseWasConnected = false;
+  hasReloadedFromCharger = false;
+  if (isDemoMode) {
+    demoAutoReloadDone = false;
+    demoSettingsInitStarted = false;
+  }
+  showReloadBanner();
+  updateDirtyCount();
+  if (hadBaseline) {
+    log('connection lost — reload from charger after reconnect', 'warn');
+  }
 }
 
 function updatePreviewMeta(model) {
@@ -333,26 +358,31 @@ function updateDirtyCount() {
   if (invalid) {
     span.textContent = `${invalid} invalid value${invalid===1?'':'s'}`;
     apply.disabled = true;
-    apply.title = hasReloadedFromCharger
+    apply.title = (hasReloadedFromCharger && sseWasConnected)
       ? ''
-      : 'Reload from charger before writing to hardware';
+      : (sseWasConnected
+          ? 'Reload from charger before writing to hardware'
+          : 'Reconnect and reload from charger before writing');
     discard.disabled = false;   // user can still discard the bad edit
   } else if (dirty || tableSkipped) {
     const parts = [];
     if (dirty)        parts.push(`${dirty} change${dirty===1?'':'s'}`);
     if (tableSkipped) parts.push(`${tableSkipped} skipped`);
     span.textContent = parts.join(' · ') + ' pending';
-    apply.disabled   = !dirty || !hasReloadedFromCharger;
-    apply.title      = hasReloadedFromCharger
+    const canApply = hasReloadedFromCharger && sseWasConnected;
+    apply.disabled   = !dirty || !canApply;
+    apply.title      = canApply
       ? ''
-      : 'Reload from charger before writing to hardware';
+      : (sseWasConnected
+          ? 'Reload from charger before writing to hardware'
+          : 'Reconnect and reload from charger before writing');
     discard.disabled = !dirty && !tableSkipped;
   } else {
     span.textContent = '';
     apply.disabled   = true;
-    apply.title      = hasReloadedFromCharger
-      ? ''
-      : 'Reload from charger before writing to hardware';
+    apply.title      = sseWasConnected
+      ? 'Reload from charger before writing to hardware'
+      : 'Reconnect and reload from charger before writing';
     discard.disabled = true;
   }
   syncActionButtons(dirty, invalid);
@@ -362,15 +392,17 @@ function updateDirtyCount() {
 function updateFormActionState() {
   const exp = document.getElementById('export-settings');
   const imp = document.getElementById('import-settings');
-  const ready = hasReloadedFromCharger;
+  const ready = hasReloadedFromCharger && sseWasConnected;
   if (exp) {
     exp.disabled = !ready;
     exp.title = ready ? 'Download current charger settings as JSON'
       : 'Reload from charger first';
   }
   if (imp) {
-    imp.disabled = !Object.keys(registers).length;
-    imp.title = 'Load settings from a JSON file into the form';
+    imp.disabled = !ready || !Object.keys(registers).length;
+    imp.title = ready
+      ? 'Load settings from a JSON file into the form'
+      : 'Reload from charger first';
   }
 }
 
@@ -605,9 +637,6 @@ function applyDemoModeFromSse(data) {
   if (healthDemoResolved || data.demo === undefined) return;
   isDemoMode = !!data.demo;
   healthDemoResolved = true;
-  if (isDemoMode && !hasReloadedFromCharger && !suggestedDefaultsTimer) {
-    scheduleSuggestedDefaults();
-  }
 }
 
 async function fetchHealthWithRetry() {
@@ -968,6 +997,8 @@ function markStreamStall() {
   // No 'state' or comment received for >2x heartbeat interval — treat as
   // disconnected.  Triggered by the watchdog in startStream().
   setConn('err', 'no response');
+  updateOnoffHint(false);
+  handleCanDisconnected();
 }
 
 function startStream() {
@@ -988,8 +1019,10 @@ function startStream() {
     if (!data.connected) {
       setConn('err', data.error ? 'CAN error' : 'no response');
       updateOnoffHint(false);
+      handleCanDisconnected();
       return;
     }
+    sseWasConnected = true;
     setConn('ok', 'connected', data.latency_ms);
     if (data.fault_status || data.chg_status || data.system_status) {
       paintHeaderStatus(data);
@@ -1001,7 +1034,7 @@ function startStream() {
       sw.checked = data.operation === 1;
       updateOnoffHint(true);
     }
-    maybeAutoReloadOnConnect();
+    if (isDemoMode) void ensureDemoSettingsLoaded();
   });
 
   // `: ping` comments keep the TCP stream warm; the browser does not
@@ -1013,6 +1046,8 @@ function startStream() {
     // Browser will auto-reconnect (default retry = 3s).  Show the
     // disconnect state immediately so the chip is honest.
     setConn('err', 'no response');
+    updateOnoffHint(false);
+    handleCanDisconnected();
   };
 
   resetWatchdog();
@@ -1092,10 +1127,26 @@ async function refreshStatus() {
 async function maybeAutoReloadOnConnect() {
   if (!isDemoMode || hasReloadedFromCharger || demoAutoReloadDone
       || _reloadInFlight) return;
+  cancelSuggestedDefaultsTimer();
   demoAutoReloadDone = true;
   log('demo mode — loading settings from simulated charger', 'ok');
   await reloadFromCharger();
   if (!hasReloadedFromCharger) demoAutoReloadDone = false;
+}
+
+/** Demo: auto-reload from FakeBus first; 5 s suggested preview only if that fails. */
+async function ensureDemoSettingsLoaded() {
+  if (!isDemoMode || hasReloadedFromCharger) return;
+  if (!demoSettingsInitStarted) {
+    demoSettingsInitStarted = true;
+    cancelSuggestedDefaultsTimer();
+    await maybeAutoReloadOnConnect();
+    if (!hasReloadedFromCharger) scheduleSuggestedDefaults();
+    return;
+  }
+  if (!demoAutoReloadDone && !_reloadInFlight) {
+    await maybeAutoReloadOnConnect();
+  }
 }
 
 async function refreshDeviceInfo() {
@@ -1482,8 +1533,8 @@ function _setModalWarn(isOn) {
 }
 
 async function openDiffModal() {
-  if (!hasReloadedFromCharger) {
-    log('reload from charger before applying to hardware', 'err');
+  if (!hasReloadedFromCharger || !sseWasConnected) {
+    log('reconnect and reload from charger before applying to hardware', 'err');
     return;
   }
   const { settings, diff } = gatherDirtyWrites();
@@ -1742,7 +1793,6 @@ async function bootApp() {
     drawCurvePreview();
     refreshRawHexFromState();
     updateDirtyCount();
-    if (isDemoMode) scheduleSuggestedDefaults();
   } catch (e) {
     log('register load failed: ' + e.message, 'err');
   }

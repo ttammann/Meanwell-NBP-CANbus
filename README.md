@@ -216,10 +216,10 @@ require coordinated changes in both files.
 **The page starts blank on real hardware.**  Click **Reload from charger**
 to read the unit; **Apply** is enabled only after a successful Reload.
 A failed Reload (any register timeout) does not enable Apply or fill
-substitute values.  **`--demo`** auto-reloads from `FakeBus` on first
-connect; if that is slow, a **5 s** suggested 16S LFP preview may appear
-until the read completes (preview only — config row stays locked until
-Reload succeeds).
+substitute values.  If the CAN link drops, Apply/Export/Import are
+disabled until you reconnect and Reload successfully.  **`--demo`** auto-reloads from `FakeBus` on first
+connect; if that read fails, a **5 s** suggested 16S LFP preview may appear
+(preview only — config row stays locked until Reload succeeds).
 
 **Clearing a field skips that register.**  If you reload values and
 then empty an input box, the row turns dashed-grey ("X skipped pending")
