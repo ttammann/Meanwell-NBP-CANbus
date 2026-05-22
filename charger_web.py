@@ -44,10 +44,10 @@ charger: MeanWellCharger | None = None  # set in main()
 # bus with the same settings if it goes down (USB unplug, slcand crash).
 _bus_args: dict | None = None
 
-# device_info is static for a given unit — cache to avoid ~12 CAN reads/min.
-_device_info_cache: dict | None = None
-_device_info_cache_at: float = 0.0
-DEVICE_INFO_CACHE_S = 55.0
+# Identity strings (MFR_*) rarely change — cache them.  VIN/temp are live.
+_device_identity_cache: dict | None = None
+_device_identity_cache_at: float = 0.0
+DEVICE_IDENTITY_CACHE_S = 55.0
 
 
 def _is_demo() -> bool:
@@ -55,20 +55,44 @@ def _is_demo() -> bool:
 
 
 def _invalidate_device_info_cache() -> None:
-    global _device_info_cache
-    _device_info_cache = None
+    global _device_identity_cache
+    _device_identity_cache = None
+
+
+def _cached_device_identity() -> dict:
+    global _device_identity_cache, _device_identity_cache_at
+    now = time.monotonic()
+    if (_device_identity_cache is not None
+            and (now - _device_identity_cache_at) < DEVICE_IDENTITY_CACHE_S):
+        return dict(_device_identity_cache)
+    data = charger.device_identity(read_hook=_device_info_read_hook())
+    _device_identity_cache = data
+    _device_identity_cache_at = now
+    return dict(data)
+
+
+def _read_live_device_telemetry() -> dict:
+    """AC input + internal temp — refreshed every request."""
+    vin = temp = None
+    try:
+        time.sleep(MeanWellCharger.INTER_WRITE_DELAY_S)
+        with _lock:
+            _, vin = charger.read_register("read_vin")
+    except can.CanError:
+        pass
+    try:
+        time.sleep(MeanWellCharger.INTER_WRITE_DELAY_S)
+        with _lock:
+            _, temp = charger.read_register("read_temp")
+    except can.CanError:
+        pass
+    return {"vin": vin, "temp": temp}
 
 
 def _cached_device_info() -> dict:
-    global _device_info_cache, _device_info_cache_at
-    now = time.monotonic()
-    if (_device_info_cache is not None
-            and (now - _device_info_cache_at) < DEVICE_INFO_CACHE_S):
-        return _device_info_cache
-    data = charger.device_info(read_hook=_device_info_read_hook())
-    _device_info_cache = data
-    _device_info_cache_at = now
-    return data
+    out = _cached_device_identity()
+    out.update(_read_live_device_telemetry())
+    return out
 
 
 # ---------------------------------------------------------------------------

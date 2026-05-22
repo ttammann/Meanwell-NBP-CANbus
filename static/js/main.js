@@ -41,6 +41,8 @@ let demoAutoReloadDone = false;
 let demoSettingsInitStarted = false;
 let _reloadInFlight = false;
 let _reloadQueued = false;
+let _applyInFlight = false;
+let settingsStale = false;
 let _applyingSuggestedDefaults = false;
 let _modalReturnFocus = null;
 
@@ -155,8 +157,28 @@ function showReloadBanner() {
 
 let sseWasConnected = false;
 
+function lockConfigRow() {
+  document.getElementById('config-row')?.classList.add('unloaded');
+  document.querySelectorAll('.check.inline-check')
+    .forEach(el => el.classList.add('unloaded'));
+}
+
+function unlockConfigRow() {
+  document.getElementById('config-row')?.classList.remove('unloaded');
+  document.querySelectorAll('.check.inline-check.unloaded')
+    .forEach(el => el.classList.remove('unloaded'));
+}
+
+function setSettingsStale(on) {
+  settingsStale = on;
+  document.getElementById('settings-panel')
+    ?.classList.toggle('settings-stale', on);
+  if (on) lockConfigRow();
+}
+
 /** CAN/SSE dropped — baseline is stale; require Reload before Apply. */
 function handleCanDisconnected() {
+  if (_reloadInFlight || _applyInFlight) return;
   if (!sseWasConnected && !hasReloadedFromCharger) return;
   const hadBaseline = hasReloadedFromCharger;
   sseWasConnected = false;
@@ -165,6 +187,9 @@ function handleCanDisconnected() {
     demoAutoReloadDone = false;
     demoSettingsInitStarted = false;
   }
+  cancelSuggestedDefaultsTimer();
+  setSuggestedPreviewMode(false);
+  setSettingsStale(true);
   showReloadBanner();
   updateDirtyCount();
   if (hadBaseline) {
@@ -358,41 +383,41 @@ function updateDirtyCount() {
   if (invalid) {
     span.textContent = `${invalid} invalid value${invalid===1?'':'s'}`;
     apply.disabled = true;
-    apply.title = (hasReloadedFromCharger && sseWasConnected)
+    apply.title = canWriteToCharger()
       ? ''
-      : (sseWasConnected
-          ? 'Reload from charger before writing to hardware'
-          : 'Reconnect and reload from charger before writing');
-    discard.disabled = false;   // user can still discard the bad edit
+      : 'Reload from charger before writing to hardware';
+    discard.disabled = false;
   } else if (dirty || tableSkipped) {
     const parts = [];
     if (dirty)        parts.push(`${dirty} change${dirty===1?'':'s'}`);
     if (tableSkipped) parts.push(`${tableSkipped} skipped`);
     span.textContent = parts.join(' · ') + ' pending';
-    const canApply = hasReloadedFromCharger && sseWasConnected;
+    const canApply = canWriteToCharger();
     apply.disabled   = !dirty || !canApply;
     apply.title      = canApply
       ? ''
-      : (sseWasConnected
-          ? 'Reload from charger before writing to hardware'
-          : 'Reconnect and reload from charger before writing');
+      : 'Reload from charger before writing to hardware';
     discard.disabled = !dirty && !tableSkipped;
   } else {
     span.textContent = '';
     apply.disabled   = true;
-    apply.title      = sseWasConnected
-      ? 'Reload from charger before writing to hardware'
-      : 'Reconnect and reload from charger before writing';
+    apply.title      = canWriteToCharger()
+      ? ''
+      : 'Reload from charger before writing to hardware';
     discard.disabled = true;
   }
   syncActionButtons(dirty, invalid);
   updateFormActionState();
 }
 
+function canWriteToCharger() {
+  return hasReloadedFromCharger && !settingsStale;
+}
+
 function updateFormActionState() {
   const exp = document.getElementById('export-settings');
   const imp = document.getElementById('import-settings');
-  const ready = hasReloadedFromCharger && sseWasConnected;
+  const ready = canWriteToCharger();
   if (exp) {
     exp.disabled = !ready;
     exp.title = ready ? 'Download current charger settings as JSON'
@@ -992,6 +1017,7 @@ function tickCurveDot(now) {
 
 let stream = null;
 let streamStallTimer = null;
+let lastSseOperation = null;
 
 function markStreamStall() {
   // No 'state' or comment received for >2x heartbeat interval — treat as
@@ -1027,12 +1053,14 @@ function startStream() {
     if (data.fault_status || data.chg_status || data.system_status) {
       paintHeaderStatus(data);
     }
-    if (data.operation !== null && data.operation !== undefined
-        && Date.now() - userToggling > 2500) {
-      const sw = document.getElementById('onoff');
-      sw.disabled = false;
-      sw.checked = data.operation === 1;
-      updateOnoffHint(true);
+    if (data.operation !== null && data.operation !== undefined) {
+      lastSseOperation = data.operation;
+      if (Date.now() - userToggling > 2500) {
+        const sw = document.getElementById('onoff');
+        sw.disabled = false;
+        sw.checked = data.operation === 1;
+        updateOnoffHint(true);
+      }
     }
     if (isDemoMode) void ensureDemoSettingsLoaded();
   });
@@ -1100,27 +1128,6 @@ function paintHeaderStatus(data) {
     ok.title = 'No active flags';
     ok.textContent = 'ok';
     el.appendChild(ok);
-  }
-}
-
-async function refreshStatus() {
-  try {
-    const s = await fetchJSON('/api/status');
-    paintHeaderStatus({
-      chg_status:    s.chg_status?.flags || [],
-      fault_status: s.fault_status?.flags || [],
-      system_status: s.system_status?.flags || [],
-    });
-  } catch {
-    const el = document.getElementById('header-status');
-    if (el) {
-      el.replaceChildren();
-      const dim = document.createElement('span');
-      dim.className = 'pill dim';
-      dim.title = 'Could not read status';
-      dim.textContent = '…';
-      el.appendChild(dim);
-    }
   }
 }
 
@@ -1250,14 +1257,14 @@ async function reloadFromCharger() {
     currentCurveConfig = data.curve_config.raw;
     const decoded = decodeCurveConfig(currentCurveConfig);
     paintConfigRow({...decoded, restartV: currentRestartV ?? 48.0});
-    document.getElementById('config-row').classList.remove('unloaded');
-    document.querySelectorAll('.check.inline-check.unloaded')
-      .forEach(el => el.classList.remove('unloaded'));
+    unlockConfigRow();
     refreshRawHexFromState();
     updateDirtyCount();
     drawCurvePreview();
     updateConfigSummary();
     hasReloadedFromCharger = true;
+    sseWasConnected = true;
+    setSettingsStale(false);
     hideReloadBanner();
     log('reloaded settings from charger', 'ok');
   } catch (e) {
@@ -1533,8 +1540,8 @@ function _setModalWarn(isOn) {
 }
 
 async function openDiffModal() {
-  if (!hasReloadedFromCharger || !sseWasConnected) {
-    log('reconnect and reload from charger before applying to hardware', 'err');
+  if (!canWriteToCharger()) {
+    log('reload from charger before applying to hardware', 'err');
     return;
   }
   const { settings, diff } = gatherDirtyWrites();
@@ -1544,10 +1551,14 @@ async function openDiffModal() {
   _buildDiffBody(document.getElementById('diff-body'), diff);
 
   let isOn = false;
-  try {
-    const r = await fetchJSON('/api/operation');
-    isOn = !!r.on;
-  } catch { /* keep isOn=false */ }
+  if (typeof lastSseOperation === 'number') {
+    isOn = lastSseOperation === 1;
+  } else {
+    try {
+      const r = await fetchJSON('/api/operation');
+      isOn = !!r.on;
+    } catch { /* keep isOn=false */ }
+  }
   _setModalWarn(isOn);
 
   _modalReturnFocus = document.activeElement;
@@ -1576,6 +1587,7 @@ async function applyChanges(settings) {
   apply.classList.add('writing');
   apply.disabled = true;
   document.getElementById('discard').disabled = true;
+  _applyInFlight = true;
   try {
     log('writing: ' + Object.entries(settings).map(([k,v]) => {
       const reg = registers[k];
@@ -1607,6 +1619,7 @@ async function applyChanges(settings) {
   } catch (e) {
     log('write failed: ' + e.message, 'err');
   } finally {
+    _applyInFlight = false;
     apply.classList.remove('writing');
     updateDirtyCount();
   }

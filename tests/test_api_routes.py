@@ -16,8 +16,7 @@ def web_client(monkeypatch):
                             bus=charger_web.FakeBus(),
                             recv_timeout=0.05))
     monkeypatch.setattr(charger_web, "_bus_args", {"demo": True})
-    charger_web._device_info_cache = None
-    charger_web._device_info_cache_at = 0.0
+    charger_web._invalidate_device_info_cache()
     app.config["TESTING"] = True
     return app.test_client()
 
@@ -55,12 +54,15 @@ class TestApiStream:
         except StopIteration:
             pass
 
-class TestDeviceInfoCache:
-    def test_device_info_served_from_cache(self, web_client, monkeypatch):
-        calls = []
 
-        def _fake_device_info(read_hook=None):
-            calls.append(1)
+class TestDeviceInfoCache:
+    def test_identity_cached_live_telemetry_refreshed(self, web_client, monkeypatch):
+        identity_calls = []
+        vin_reads = []
+        temp_reads = []
+
+        def _fake_identity(read_hook=None):
+            identity_calls.append(1)
             return {
                 "manufacturer": "MEAN-WELL",
                 "model": "NPB-1700-48",
@@ -68,12 +70,21 @@ class TestDeviceInfoCache:
                 "location": "TW",
                 "firmware": "V01.05",
                 "made": "250114",
-                "vin": 230.4,
-                "temp": 35.0,
             }
 
+        def _fake_read(name):
+            if name == "read_vin":
+                vin_reads.append(1)
+                return 2304, 230.4
+            if name == "read_temp":
+                temp_reads.append(1)
+                return 354, 35.4
+            raise KeyError(name)
+
         monkeypatch.setattr(
-            charger_web.charger, "device_info", _fake_device_info)
+            charger_web.charger, "device_identity", _fake_identity)
+        monkeypatch.setattr(
+            charger_web.charger, "read_register", _fake_read)
         charger_web._invalidate_device_info_cache()
 
         r1 = web_client.get("/api/device_info")
@@ -81,7 +92,10 @@ class TestDeviceInfoCache:
         assert r1.status_code == 200
         assert r2.status_code == 200
         assert r1.get_json()["model"] == "NPB-1700-48"
-        assert len(calls) == 1
+        assert r1.get_json()["vin"] == pytest.approx(230.4, rel=1e-3)
+        assert len(identity_calls) == 1
+        assert len(vin_reads) == 2
+        assert len(temp_reads) == 2
 
 
 class TestApiWritePostRead:

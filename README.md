@@ -192,8 +192,8 @@ USB-CAN), settings load only when you click **Reload from charger** (or
 after Apply re-reads the unit) — no invented defaults.  In **`--demo`**
 mode the UI auto-reloads once from the simulated bus on connect, with a
 **5 s** suggested-preview fallback if that read has not completed yet.
-`/api/device_info` is cached server-side (~55 s) so the 60 s UI poll does
-not hammer the bus.  Post-write verification reads are paced outside the
+`/api/device_info` caches identity strings (~55 s) but refreshes live
+VIN/temp on every request.  Post-write verification reads are paced outside the
 global CAN lock (same as batch `/api/read`).  The server auto-reconnects
 the python-can bus after repeated `CanError`s
 (USB unplug / `slcand` restart) without restarting the container.
@@ -216,8 +216,8 @@ require coordinated changes in both files.
 **The page starts blank on real hardware.**  Click **Reload from charger**
 to read the unit; **Apply** is enabled only after a successful Reload.
 A failed Reload (any register timeout) does not enable Apply or fill
-substitute values.  If the CAN link drops, Apply/Export/Import are
-disabled until you reconnect and Reload successfully.  **`--demo`** auto-reloads from `FakeBus` on first
+substitute values.  If the CAN link drops, the form shows a stale warning
+and Apply/Export/Import are disabled until you Reload successfully.  **`--demo`** auto-reloads from `FakeBus` on first
 connect; if that read fails, a **5 s** suggested 16S LFP preview may appear
 (preview only — config row stays locked until Reload succeeds).
 
