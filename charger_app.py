@@ -345,6 +345,15 @@ class MeanWellCharger:
         Returns the original operation state (0/1) so callers can surface
         the cycle in the UI (or skip it entirely on a read-only preview).
         """
+        for name, value in settings:
+            reg = REGISTERS[name]
+            if not reg.writable:
+                raise ValueError(f"register {name!r} is read-only")
+            if name in RANGES:
+                lo, hi = RANGES[name]
+                if not (lo <= value <= hi):
+                    raise ValueError(
+                        f"{name} must be in [{lo}, {hi}] (got {value})")
         was_on = None
         if cycle:
             raw, _ = self.read_register("operation")

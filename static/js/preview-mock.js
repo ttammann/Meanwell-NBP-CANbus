@@ -164,6 +164,7 @@
         if (self._closed) return;
         self._emit('state', {
           connected: true,
+          demo: true,
           operation,
           latency_ms: 4 + Math.random() * 8,
           fail_streak: 0,

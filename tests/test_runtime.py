@@ -187,14 +187,13 @@ class TestWriteManyCyclePreservation:
         assert was_on is None
         assert mw.read_register("curve_cc")[1] == pytest.approx(18.0, rel=1e-3)
 
-    def test_write_validation_happens_inside_cycle(self):
-        """If a value in a batch is invalid, we must still re-energise the
-        output if it was on (the `finally` clause).  Otherwise a typo in
-        one field could silently leave the charger OFF."""
+    def test_write_many_validates_before_any_write(self):
+        """Invalid values in a batch must not commit earlier registers."""
         mw = _make_charger()
-        with pytest.raises(ValueError):
-            mw.write_many([("curve_cc", 18.0), ("curve_cv", 999.0)])
-        # Output should be back ON despite the mid-batch exception
+        mw.write_register("curve_cc", 10.0)
+        with pytest.raises(ValueError, match="curve_cv"):
+            mw.write_many([("curve_cc", 20.0), ("curve_cv", 999.0)])
+        assert mw.read_register("curve_cc")[1] == pytest.approx(10.0, rel=1e-3)
         raw, _ = mw.read_register("operation")
         assert raw == 1
 
@@ -351,40 +350,17 @@ class TestStateBroadcaster:
         b.unsubscribe(q)
         assert q not in b._subs
 
-    def test_slow_subscriber_drops_oldest_not_newest(self, monkeypatch, patched_lock):
-        """A subscriber whose queue fills up must keep getting the
-        *latest* events — we'd rather drop a stale state than drop the
-        fresh "bus came back" event the user actually cares about."""
+    def test_fanout_keeps_latest_state_only(self, monkeypatch, patched_lock):
+        """Per-subscriber queue depth is 1 — fan-out replaces stale state."""
         _swap_charger(monkeypatch, FakeBus())
         b = StateBroadcaster()
-        b._last_payload = b._read_once()
-        # subscribe() pushes the initial last_payload, occupying 1 slot.
-        # Fill the queue with sentinel "old" payloads.
         q = b.subscribe()
-        # The queue's bound is SUBSCRIBER_QUEUE_MAX (32 by default); jam it.
-        for i in range(64):
-            try: q.put_nowait({"connected": True, "old": i})
-            except queue.Full: break
-        assert q.full()
-        # Now have the broadcaster fan out a new payload — it should
-        # drop the oldest to make room.
-        new_payload = {"connected": True, "operation": 99,
-                       "latency_ms": 2.0, "fail_streak": 0, "ts": time.time()}
-        with b._subs_lock:
-            for sub_q in b._subs:
-                try:
-                    sub_q.put_nowait(new_payload)
-                except queue.Full:
-                    try:
-                        sub_q.get_nowait()
-                        sub_q.put_nowait(new_payload)
-                    except (queue.Empty, queue.Full):
-                        pass
-        # Drain — the *last* event in the queue should be the new one.
-        items = []
-        while not q.empty():
-            items.append(q.get_nowait())
-        assert items[-1].get("operation") == 99
+        b._fanout({"connected": True, "operation": 1, "latency_ms": 1.0,
+                   "fail_streak": 0, "ts": time.time()})
+        b._fanout({"connected": True, "operation": 99, "latency_ms": 2.0,
+                   "fail_streak": 0, "ts": time.time()})
+        assert q.qsize() == 1
+        assert q.get_nowait().get("operation") == 99
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +425,11 @@ class TestParseWriteRequest:
             {"settings": {"curve_cc": 15.0}, "cycle": False})
         assert settings == [("curve_cc", 15.0)]
         assert cycle is False
+
+    def test_rejects_non_boolean_cycle(self):
+        with pytest.raises(ValueError, match="cycle must be a JSON boolean"):
+            _parse_write_request({"settings": {"curve_cc": 15.0},
+                                  "cycle": "false"})
 
 
 @pytest.fixture

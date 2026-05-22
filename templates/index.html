@@ -49,7 +49,7 @@
     <h2>Preview <em>charge curve</em><span class="meta" id="preview-meta">3-stage · 48 V LFP</span></h2>
     <p class="sr-only" id="curve-sr-desc">Illustrative charge curve from CC, CV, FV, and TC settings once loaded. Not live telemetry from the charger.</p>
     <div class="curve-preview is-empty" aria-describedby="curve-sr-desc">
-      <p class="curve-empty" id="curve-empty">Plot appears after Reload from charger, or suggested defaults in a few seconds.</p>
+      <p class="curve-empty" id="curve-empty">Plot appears after Reload from charger (demo may preload automatically).</p>
       <svg id="curve-svg" viewBox="0 0 780 320" preserveAspectRatio="xMidYMid meet">
         <!-- stage background tints + dividers + stage-name labels -->
         <g id="curve-stages"></g>
@@ -77,7 +77,7 @@
   </div>
 
   <!-- charge curve registers: focal point -->
-  <div class="panel">
+  <div class="panel" id="settings-panel">
     <h2>Settings <em>charge curve</em>
       <span class="meta">
         B0–B9 / C2

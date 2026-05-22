@@ -24,19 +24,23 @@ let currentValues = {};
 let currentCurveConfig = null;     // raw 16-bit value last seen on the wire
 let currentRestartV    = null;     // last seen chg_rst_vbat in volts
 
-// Suggested 16S LFP values (README) — used only after Reload or a 5s delay.
+// Suggested 16S LFP values (README) — demo preview / curve fallback only.
 const CURVE_DEFAULTS = { cc: 15.0, cv: 55.2, fv: 55.2, tc: 5.0 };
 const SETTINGS_DEFAULTS = {
   curve_cc: 15.0, curve_cv: 55.2, curve_fv: 55.2, curve_tc: 5.0,
   curve_cc_timeout: 900, curve_cv_timeout: 60, curve_fv_timeout: 60,
   chg_rst_vbat: 48.0,
 };
-const DEFAULT_CURVE_CONFIG = 0x0884;
-
+let isDemoMode = false;
+let healthDemoResolved = false;
 let curveDefaultsAllowed = false;
+let hasSuggestedPreview = false;
 let suggestedDefaultsTimer = null;
 let hasReloadedFromCharger = false;
+let demoAutoReloadDone = false;
 let _reloadInFlight = false;
+let _reloadQueued = false;
+let _applyingSuggestedDefaults = false;
 let _modalReturnFocus = null;
 
 const SETTINGS_EXPORT_VERSION = 1;
@@ -255,6 +259,7 @@ function buildSettingsTable() {
   // the inline TOE checkboxes are handled separately below.
   tbody.querySelectorAll('input[data-name]').forEach(inp => {
     inp.addEventListener('input', () => {
+      onUserEditedBeforeReload();
       const name = inp.dataset.name;
       const orig = currentValues[name];
       const reg = registers[name];
@@ -293,6 +298,7 @@ function buildSettingsTable() {
     const el = document.getElementById(toe.id);
     if (el) {
       el.addEventListener('change', () => {
+        onUserEditedBeforeReload();
         refreshConfigRowChangedClasses();
         updateDirtyCount();
       });
@@ -327,17 +333,26 @@ function updateDirtyCount() {
   if (invalid) {
     span.textContent = `${invalid} invalid value${invalid===1?'':'s'}`;
     apply.disabled = true;
+    apply.title = hasReloadedFromCharger
+      ? ''
+      : 'Reload from charger before writing to hardware';
     discard.disabled = false;   // user can still discard the bad edit
   } else if (dirty || tableSkipped) {
     const parts = [];
     if (dirty)        parts.push(`${dirty} change${dirty===1?'':'s'}`);
     if (tableSkipped) parts.push(`${tableSkipped} skipped`);
     span.textContent = parts.join(' · ') + ' pending';
-    apply.disabled   = !dirty;   // skipped-only = nothing to write
+    apply.disabled   = !dirty || !hasReloadedFromCharger;
+    apply.title      = hasReloadedFromCharger
+      ? ''
+      : 'Reload from charger before writing to hardware';
     discard.disabled = !dirty && !tableSkipped;
   } else {
     span.textContent = '';
     apply.disabled   = true;
+    apply.title      = hasReloadedFromCharger
+      ? ''
+      : 'Reload from charger before writing to hardware';
     discard.disabled = true;
   }
   syncActionButtons(dirty, invalid);
@@ -521,12 +536,14 @@ function gatherConfigRowWrites() {
 // inside the table get their listeners from buildSettingsTable).
 ['cfg-charger', 'cfg-tempoff', 'cfg-float', 'cfg-restart'].forEach(id => {
   document.getElementById(id).addEventListener('change', () => {
+    onUserEditedBeforeReload();
     if (id === 'cfg-restart') applyRestartGroupState();
     refreshConfigRowChangedClasses();
     updateDirtyCount();
   });
 });
 document.getElementById('cfg-restart-v').addEventListener('input', () => {
+  onUserEditedBeforeReload();
   refreshConfigRowChangedClasses();
   updateDirtyCount();
 });
@@ -551,7 +568,61 @@ function cancelSuggestedDefaultsTimer() {
   }
 }
 
+function onUserEditedBeforeReload() {
+  if (!_applyingSuggestedDefaults) cancelSuggestedDefaultsTimer();
+}
+
+function setSuggestedPreviewMode(on) {
+  hasSuggestedPreview = on;
+  const panel = document.getElementById('settings-panel');
+  if (panel) panel.classList.toggle('suggested-preview', on);
+}
+
+function clearSuggestedPreviewForm() {
+  setSuggestedPreviewMode(false);
+  curveDefaultsAllowed = false;
+  for (const name of SETTING_KEYS) {
+    const inp = document.querySelector(`#settings input[data-name="${name}"]`);
+    if (inp) {
+      inp.value = '';
+      inp.placeholder = '';
+      inp.classList.remove('changed', 'invalid', 'skipped');
+    }
+    const raw = document.querySelector(`#settings [data-raw="${name}"]`);
+    if (raw) raw.textContent = '';
+    delete currentValues[name];
+  }
+  drawCurvePreview();
+}
+
+function applyDemoModeFromHealth(h) {
+  if (!h || healthDemoResolved) return;
+  isDemoMode = !!h.demo;
+  healthDemoResolved = true;
+}
+
+function applyDemoModeFromSse(data) {
+  if (healthDemoResolved || data.demo === undefined) return;
+  isDemoMode = !!data.demo;
+  healthDemoResolved = true;
+  if (isDemoMode && !hasReloadedFromCharger && !suggestedDefaultsTimer) {
+    scheduleSuggestedDefaults();
+  }
+}
+
+async function fetchHealthWithRetry() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await fetchJSON('/api/health');
+    } catch {
+      if (attempt < 2) await _sleep(400 * (attempt + 1));
+    }
+  }
+  return null;
+}
+
 function scheduleSuggestedDefaults() {
+  if (!isDemoMode) return;
   cancelSuggestedDefaultsTimer();
   suggestedDefaultsTimer = setTimeout(() => {
     suggestedDefaultsTimer = null;
@@ -561,21 +632,22 @@ function scheduleSuggestedDefaults() {
   }, 5000);
 }
 
-/** Fill form + preview with README suggested values (not from CAN). */
+/** Preview-only fill (README 16S LFP) — not a charger baseline for Apply. */
 function applySuggestedDefaults() {
   if (!registers || !Object.keys(registers).length) return;
+  _applyingSuggestedDefaults = true;
   allowSettingsDefaults();
+  setSuggestedPreviewMode(true);
   for (const name of SETTING_KEYS) {
     const val = SETTINGS_DEFAULTS[name];
     if (val === undefined) continue;
-    currentValues[name] = val;
     const inp = document.querySelector(`#settings input[data-name="${name}"]`);
     if (inp) {
       const formatted = formatInputValue(val, registers[name]);
       inp.value = formatted;
-      inp.placeholder = `(skip — ${formatted})`;
+      inp.placeholder = `(suggested preview — ${formatted})`;
       inp.classList.remove('changed', 'invalid', 'skipped');
-      inp.title = '';
+      inp.title = 'Suggested value for preview only — Reload from charger before Apply';
     }
     const raw = document.querySelector(`#settings [data-raw="${name}"]`);
     if (raw) {
@@ -583,17 +655,10 @@ function applySuggestedDefaults() {
       const rawN = reg.scale === 1
         ? (Number(val) & 0xFFFF)
         : Math.round(Number(val) / reg.scale);
-      raw.textContent = `raw=${rawN}`;
+      raw.textContent = `raw=${rawN} (suggested)`;
     }
   }
-  currentRestartV = SETTINGS_DEFAULTS.chg_rst_vbat;
-  currentCurveConfig = DEFAULT_CURVE_CONFIG;
-  const decoded = decodeCurveConfig(currentCurveConfig);
-  paintConfigRow({...decoded, restartV: currentRestartV ?? 48.0});
-  document.getElementById('config-row').classList.remove('unloaded');
-  document.querySelectorAll('.check.inline-check.unloaded')
-    .forEach(el => el.classList.remove('unloaded'));
-  refreshRawHexFromState();
+  _applyingSuggestedDefaults = false;
   updateDirtyCount();
   drawCurvePreview();
   updateConfigSummary();
@@ -609,7 +674,7 @@ function readCurveInputs() {
     if (currentValues[name] !== undefined && currentValues[name] !== null) {
       return currentValues[name];
     }
-    if (curveDefaultsAllowed) return CURVE_DEFAULTS[key];
+    if (isDemoMode && curveDefaultsAllowed) return CURVE_DEFAULTS[key];
     return null;
   }
   return {
@@ -919,6 +984,7 @@ function startStream() {
     resetWatchdog();
     let data;
     try { data = JSON.parse(e.data); } catch { return; }
+    applyDemoModeFromSse(data);
     if (!data.connected) {
       setConn('err', data.error ? 'CAN error' : 'no response');
       updateOnoffHint(false);
@@ -935,6 +1001,7 @@ function startStream() {
       sw.checked = data.operation === 1;
       updateOnoffHint(true);
     }
+    maybeAutoReloadOnConnect();
   });
 
   // `: ping` comments keep the TCP stream warm; the browser does not
@@ -1022,6 +1089,15 @@ async function refreshStatus() {
   }
 }
 
+async function maybeAutoReloadOnConnect() {
+  if (!isDemoMode || hasReloadedFromCharger || demoAutoReloadDone
+      || _reloadInFlight) return;
+  demoAutoReloadDone = true;
+  log('demo mode — loading settings from simulated charger', 'ok');
+  await reloadFromCharger();
+  if (!hasReloadedFromCharger) demoAutoReloadDone = false;
+}
+
 async function refreshDeviceInfo() {
   try {
     const d = await fetchJSON('/api/device_info');
@@ -1081,61 +1157,51 @@ async function loadRegisters() {
 }
 
 async function reloadFromCharger() {
-  if (_reloadInFlight) return;
+  if (_reloadInFlight) {
+    _reloadQueued = true;
+    return;
+  }
   cancelSuggestedDefaultsTimer();
+  setSuggestedPreviewMode(false);
   _reloadInFlight = true;
   const reloadBtn = document.getElementById('reload');
   reloadBtn.classList.add('writing');
   reloadBtn.disabled = true;
+  reloadBtn.title = 'Reading from charger…';
   try {
-    allowSettingsDefaults();
     const allKeys = SETTING_KEYS.concat(FRIENDLY_KEYS);
     const data = await fetchJSON('/api/read?names=' + allKeys.join(','));
-    // table rows — charger value when present, else suggested default
+    const missing = [];
+    for (const name of allKeys) {
+      const v = data[name];
+      if (!v || v.value === null || v.value === undefined) missing.push(name);
+    }
+    if (missing.length) {
+      throw new Error('no response for: ' + missing.join(', '));
+    }
+    if (isDemoMode) allowSettingsDefaults();
     for (const name of SETTING_KEYS) {
       const v = data[name];
-      const value = (v && v.value !== null) ? v.value : SETTINGS_DEFAULTS[name];
-      if (value === undefined) continue;
+      const value = v.value;
       currentValues[name] = value;
       const inp = document.querySelector(`#settings input[data-name="${name}"]`);
       if (inp) {
         const formatted = formatInputValue(value, registers[name]);
         inp.value = formatted;
-        // Placeholder shows the current value so if the user clears the
-        // field (= "skip on Apply"), they can see what's being preserved.
         inp.placeholder = `(skip — ${formatted})`;
         inp.classList.remove('changed', 'invalid', 'skipped');
         inp.title = '';
       }
       const raw = document.querySelector(`#settings [data-raw="${name}"]`);
-      if (raw) {
-        const reg = registers[name];
-        const rawN = (v && v.raw !== null)
-          ? v.raw
-          : (reg.scale === 1
-              ? (Number(value) & 0xFFFF)
-              : Math.round(Number(value) / reg.scale));
-        raw.textContent = `raw=${rawN}`;
-      }
+      if (raw) raw.textContent = `raw=${v.raw}`;
     }
-    if (data.chg_rst_vbat && data.chg_rst_vbat.value !== null) {
-      currentRestartV = data.chg_rst_vbat.value;
-    } else {
-      currentRestartV = SETTINGS_DEFAULTS.chg_rst_vbat;
-    }
-    if (data.curve_config && data.curve_config.raw !== null) {
-      currentCurveConfig = data.curve_config.raw;
-    } else if (currentCurveConfig === null) {
-      currentCurveConfig = DEFAULT_CURVE_CONFIG;
-    }
-    if (currentCurveConfig !== null) {
-      const decoded = decodeCurveConfig(currentCurveConfig);
-      paintConfigRow({...decoded, restartV: currentRestartV ?? 48.0});
-      document.getElementById('config-row').classList.remove('unloaded');
-      // Inline TOE checkboxes inside the table also become editable
-      document.querySelectorAll('.check.inline-check.unloaded')
-        .forEach(el => el.classList.remove('unloaded'));
-    }
+    currentRestartV = data.chg_rst_vbat.value;
+    currentCurveConfig = data.curve_config.raw;
+    const decoded = decodeCurveConfig(currentCurveConfig);
+    paintConfigRow({...decoded, restartV: currentRestartV ?? 48.0});
+    document.getElementById('config-row').classList.remove('unloaded');
+    document.querySelectorAll('.check.inline-check.unloaded')
+      .forEach(el => el.classList.remove('unloaded'));
     refreshRawHexFromState();
     updateDirtyCount();
     drawCurvePreview();
@@ -1148,7 +1214,12 @@ async function reloadFromCharger() {
   } finally {
     reloadBtn.classList.remove('writing');
     reloadBtn.disabled = false;
+    reloadBtn.title = '';
     _reloadInFlight = false;
+    if (_reloadQueued) {
+      _reloadQueued = false;
+      reloadFromCharger();
+    }
   }
 }
 
@@ -1411,6 +1482,10 @@ function _setModalWarn(isOn) {
 }
 
 async function openDiffModal() {
+  if (!hasReloadedFromCharger) {
+    log('reload from charger before applying to hardware', 'err');
+    return;
+  }
   const { settings, diff } = gatherDirtyWrites();
   if (!Object.keys(settings).length) return;
   _pendingWrites = { settings, diff };
@@ -1491,7 +1566,12 @@ function discardChanges() {
     '#settings input.changed, #config-row .check.changed, #config-row input.num.changed, #cfg-raw.changed'
   ).length;
   if (!hasEdits) return;
-  // Restore every input from currentValues and repaint the config row.
+  if (!hasReloadedFromCharger) {
+    clearSuggestedPreviewForm();
+    updateConfigSummary();
+    log('cleared suggested preview', 'ok');
+    return;
+  }
   for (const name of SETTING_KEYS) {
     const inp = document.querySelector(`#settings input[data-name="${name}"]`);
     if (!inp) continue;
@@ -1502,7 +1582,7 @@ function discardChanges() {
   }
   if (currentCurveConfig !== null) {
     paintConfigRow({...decodeCurveConfig(currentCurveConfig),
-                    restartV: currentRestartV});
+                    restartV: currentRestartV ?? 48.0});
   }
   refreshRawHexFromState();
   updateDirtyCount();
@@ -1542,6 +1622,7 @@ function _decodeCurveConfigBrief(v) {
 }
 
 document.getElementById('cfg-raw').addEventListener('input', (e) => {
+  onUserEditedBeforeReload();
   const inp = e.target;
   const dec = document.getElementById('cfg-raw-decoded');
   inp.classList.remove('changed', 'invalid');
@@ -1651,22 +1732,23 @@ document.getElementById('onoff').addEventListener('change', async (e) => {
   }
 });
 
-// Boot sequence: restore persisted log (so a refresh doesn't lose
-// context), load register metadata + render empty form, draw the curve
-// empty curve preview until values are loaded, then kick off the rAF
-// traveller loop, the SSE connection stream, and the (rare) device-info
-// poll.
-_loadPersistedLog();
-loadRegisters()
-  .then(() => {
+// Boot sequence: restore persisted log, detect demo vs real CAN, load
+// register metadata, then SSE / device-info polls.
+async function bootApp() {
+  _loadPersistedLog();
+  applyDemoModeFromHealth(await fetchHealthWithRetry());
+  try {
+    await loadRegisters();
     drawCurvePreview();
     refreshRawHexFromState();
     updateDirtyCount();
-    scheduleSuggestedDefaults();
-  })
-  .catch(e => log('register load failed: ' + e.message, 'err'));
-refreshDeviceInfo();
-refreshStatus();
-startStream();
-requestAnimationFrame((t) => { lastFrame = t; tickCurveDot(t); });
-setInterval(refreshDeviceInfo, 60000);
+    if (isDemoMode) scheduleSuggestedDefaults();
+  } catch (e) {
+    log('register load failed: ' + e.message, 'err');
+  }
+  refreshDeviceInfo();
+  startStream();
+  requestAnimationFrame((t) => { lastFrame = t; tickCurveDot(t); });
+  setInterval(refreshDeviceInfo, 60000);
+}
+bootApp();

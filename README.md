@@ -187,9 +187,15 @@ the **output** switch.
 shared server-side CAN poller fans out to every browser tab.  Each tick
 reads operation plus fault/charge/system status for the header pills.
 The chip shows `connected · <latency ms>` and only flips to disconnected
-after **two** consecutive failed reads.  On first connect the UI auto-
-reloads settings once (manual Reload still available anytime).
-The server auto-reconnects the python-can bus after repeated `CanError`s
+after **two** consecutive failed reads.  On a **real CAN** link (charger /
+USB-CAN), settings load only when you click **Reload from charger** (or
+after Apply re-reads the unit) — no invented defaults.  In **`--demo`**
+mode the UI auto-reloads once from the simulated bus on connect, with a
+**5 s** suggested-preview fallback if that read has not completed yet.
+`/api/device_info` is cached server-side (~55 s) so the 60 s UI poll does
+not hammer the bus.  Post-write verification reads are paced outside the
+global CAN lock (same as batch `/api/read`).  The server auto-reconnects
+the python-can bus after repeated `CanError`s
 (USB unplug / `slcand` restart) without restarting the container.
 
 **Safety on Apply:** `write_many()` preserves the pre-write output
@@ -207,13 +213,13 @@ enforces the absolute voltage limits (42.0 – 58.4 V) and the curve
 preview's Y-axes are fixed to that window.  Editing those would
 require coordinated changes in both files.
 
-**The page starts blank.**  Click **Reload from charger** to populate
-the table with what's currently in the unit; from there, edit any row
-and click **Apply changes** to write only the dirty fields back, in one
-OFF/ON cycle.  The friendly checkbox row stays disabled until you've
-done a reload, since toggling individual `curve_config` bits requires
-knowing the existing register state to preserve bits the UI doesn't
-expose.
+**The page starts blank on real hardware.**  Click **Reload from charger**
+to read the unit; **Apply** is enabled only after a successful Reload.
+A failed Reload (any register timeout) does not enable Apply or fill
+substitute values.  **`--demo`** auto-reloads from `FakeBus` on first
+connect; if that is slow, a **5 s** suggested 16S LFP preview may appear
+until the read completes (preview only — config row stays locked until
+Reload succeeds).
 
 **Clearing a field skips that register.**  If you reload values and
 then empty an input box, the row turns dashed-grey ("X skipped pending")
@@ -329,7 +335,7 @@ pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 
-78 tests, runs in <1 s.  No CAN hardware required.
+83 tests, runs in <2 s.  No CAN hardware required.
 
 ## HTTP API (all JSON)
 

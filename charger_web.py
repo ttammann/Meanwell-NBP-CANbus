@@ -44,6 +44,32 @@ charger: MeanWellCharger | None = None  # set in main()
 # bus with the same settings if it goes down (USB unplug, slcand crash).
 _bus_args: dict | None = None
 
+# device_info is static for a given unit — cache to avoid ~12 CAN reads/min.
+_device_info_cache: dict | None = None
+_device_info_cache_at: float = 0.0
+DEVICE_INFO_CACHE_S = 55.0
+
+
+def _is_demo() -> bool:
+    return bool(_bus_args and _bus_args.get("demo"))
+
+
+def _invalidate_device_info_cache() -> None:
+    global _device_info_cache
+    _device_info_cache = None
+
+
+def _cached_device_info() -> dict:
+    global _device_info_cache, _device_info_cache_at
+    now = time.monotonic()
+    if (_device_info_cache is not None
+            and (now - _device_info_cache_at) < DEVICE_INFO_CACHE_S):
+        return _device_info_cache
+    data = charger.device_info(read_hook=_device_info_read_hook())
+    _device_info_cache = data
+    _device_info_cache_at = now
+    return data
+
 
 # ---------------------------------------------------------------------------
 # Simulated CAN bus for --demo mode
@@ -159,9 +185,12 @@ def _parse_write_request(body):
         if not REGISTERS[name].writable:
             raise ValueError(f"register {name!r} is read-only")
         settings.append((name, value))
-    cycle = body.get("cycle", True)
-    if not isinstance(cycle, bool):
-        cycle = bool(cycle)
+    if "cycle" in body:
+        cycle = body["cycle"]
+        if not isinstance(cycle, bool):
+            raise ValueError("cycle must be a JSON boolean (true or false)")
+    else:
+        cycle = True
     return settings, cycle
 
 
@@ -329,13 +358,9 @@ def api_write():
     settings, cycle = _parse_write_request(body)
     with _lock:
         was_on = charger.write_many(settings, cycle=cycle)
-        # Re-read so the caller sees what actually committed.  Same lock
-        # acquisition — we hold it across both phases so a concurrent
-        # write can't interleave.
-        post = {}
-        for name, _v in settings:
-            raw, scaled = charger.read_register(name)
-            post[name] = {"raw": raw, "value": scaled}
+    # Post-reads paced outside the lock (same pattern as /api/read) so SSE
+    # ticks are not blocked for the whole verification batch.
+    post = _read_registers_paced([name for name, _ in settings])
     return jsonify({
         "ok":         True,
         "wrote":      dict(settings),
@@ -365,7 +390,7 @@ def api_off():
 @safe_can
 def api_device_info():
     """Identity + always-readable info (no battery / output current required)."""
-    return jsonify(charger.device_info(read_hook=_device_info_read_hook()))
+    return jsonify(_cached_device_info())
 
 
 @app.route("/api/operation")
@@ -405,7 +430,7 @@ def api_operation():
 STREAM_HEARTBEAT_S    = 3.0  # broadcaster cadence (also CAN read interval)
 DISCONNECT_THRESHOLD  = 2    # consecutive read failures before flipping UI
 RECONNECT_THRESHOLD   = 4    # consecutive CAN errors before bus rebuild
-SUBSCRIBER_QUEUE_MAX  = 32   # cap per-client backlog; older events drop silently
+SUBSCRIBER_QUEUE_MAX  = 1    # latest state only — slow tabs never fall off the fan-out
 
 
 class StateBroadcaster:
@@ -499,6 +524,7 @@ class StateBroadcaster:
                 except Exception: pass
             log.info("CAN bus rebuilt successfully")
             self._err_streak = 0
+            _invalidate_device_info_cache()
         except Exception as e:
             log.error("CAN reconnect failed: %s", e)
             # Counter not reset — we'll try again next cycle.
@@ -517,6 +543,7 @@ class StateBroadcaster:
                     "connected":   self._fail_streak < DISCONNECT_THRESHOLD
                                    and self._last_payload is not None
                                    and self._last_payload.get("connected", False),
+                    "demo":        _is_demo(),
                     "operation":   None,
                     "latency_ms":  None,
                     "fail_streak": self._fail_streak,
@@ -528,6 +555,7 @@ class StateBroadcaster:
             self._err_streak  = 0
             payload = {
                 "connected":   True,
+                "demo":        _is_demo(),
                 "operation":   raw,
                 "latency_ms":  round(latency_ms, 1),
                 "fail_streak": 0,
@@ -546,6 +574,7 @@ class StateBroadcaster:
                 "connected":   self._fail_streak < DISCONNECT_THRESHOLD
                                and self._last_payload is not None
                                and self._last_payload.get("connected", False),
+                "demo":        _is_demo(),
                 "operation":   None,
                 "latency_ms":  None,
                 "error":       f"CAN error: {e}",
@@ -553,29 +582,28 @@ class StateBroadcaster:
                 "ts":          time.time(),
             }
 
+    def _fanout(self, payload: dict) -> None:
+        """Push latest state to every subscriber (queue depth 1)."""
+        with self._subs_lock:
+            for q in self._subs:
+                if q.full():
+                    try:
+                        q.get_nowait()
+                    except queue.Empty:
+                        pass
+                try:
+                    q.put_nowait(payload)
+                except queue.Full:
+                    try:
+                        self._subs.remove(q)
+                    except ValueError:
+                        pass
+
     def _run(self):
         while not self._stop.is_set():
             payload = self._read_once()
             self._last_payload = payload
-            with self._subs_lock:
-                dead = []
-                for q in self._subs:
-                    try:
-                        q.put_nowait(payload)
-                    except queue.Full:
-                        # Subscriber is too slow — drop the oldest event
-                        # and try once more.  If still full, give up on
-                        # this tick (the next one will come 3 s later).
-                        try:
-                            q.get_nowait()
-                            q.put_nowait(payload)
-                        except (queue.Empty, queue.Full):
-                            dead.append(q)
-                for q in dead:
-                    # Subscriber will close itself on the next iteration
-                    # of its generator; we just stop trying to feed it.
-                    try: self._subs.remove(q)
-                    except ValueError: pass
+            self._fanout(payload)
             self._stop.wait(STREAM_HEARTBEAT_S)
 
 
