@@ -78,6 +78,9 @@
     const path = url.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
     const qs = url.includes('?') ? new URL(url, 'http://local').searchParams : null;
 
+    if (path === '/api/health') {
+      return jsonResponse({ ok: true, demo: true, connected: true });
+    }
     if (path === '/api/registers') {
       return jsonResponse(REGISTERS);
     }
@@ -165,6 +168,9 @@
           latency_ms: 4 + Math.random() * 8,
           fail_streak: 0,
           ts: Date.now() / 1000,
+          chg_status: STATUS.chg_status.flags,
+          fault_status: STATUS.fault_status.flags,
+          system_status: STATUS.system_status.flags,
         });
       };
       push();

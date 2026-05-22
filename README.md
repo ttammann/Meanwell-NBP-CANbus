@@ -24,6 +24,37 @@ python3 charger_web.py
 python3 charger_web.py --demo
 ```
 
+### Windows
+
+The web UI and CLI run on Windows. **SocketCAN (`socketcan`) is Linux-only**, so on
+Windows you have three practical options:
+
+1. **`--demo`** — full UI with a simulated charger (no hardware):
+
+   ```powershell
+   py -m venv .venv
+   .venv\Scripts\activate
+   pip install -r requirements.txt
+   python charger_web.py --demo
+   ```
+
+2. **USB-CAN adapter** — install the vendor driver, then use the matching
+   python-can backend, for example:
+
+   ```powershell
+   python charger_web.py --interface slcan --channel COM3
+   python charger_web.py --interface pcan --channel PCAN_USBBUS1
+   ```
+
+   Use `python -m can.interfaces` or the python-can docs to list backends
+   available on your machine.
+
+3. **WSL2 + Linux** — run the app inside WSL with SocketCAN or USB passthrough
+   if you need the same `can0` workflow as a Pi.
+
+Docker Desktop on Windows can run the **`demo`** compose profile; the **`charger`**
+(host SocketCAN) profile still requires a Linux host with `can0`.
+
 ## Docker
 
 A small Python image is included.  Three compose profiles cover the
@@ -117,15 +148,34 @@ live-telemetry panel.  Four sections, top to bottom:
 1. **Preview charge curve** — live SVG mirror of the manual's 3-stage
    diagram (page 44).  Stages labelled *bulk / absorption / float*;
    voltage and current axes with rotated titles; charcoal + slate
-   curves.  Annotation pills show `CURVE_CC/CV/FV/TC` and redraw on
-   every keystroke.  Stage-1 voltage stays flat then knees sharply to
-   CV (LFP shape).  A traveller dot animates along the curves.
+   curves.  The plot and settings table start empty; after **5 seconds**
+   or when you click **Reload from charger**, suggested 16S LFP defaults
+   (or values read from the unit) fill in.  Annotation pills and a
+   traveller dot follow once CC, CV, FV, and TC are available.
 2. **Settings charge curve** — editable table + friendly `curve_config`
    checkboxes + optional raw-hex editor for power users.  **Apply**
    opens a confirmation modal listing every change and whether the
    output will be power-cycled (only if it was ON).  **Discard** /
    **Esc** revert pending edits.  Empty fields are skipped on Apply
-   (see the `?` hint).  Keyboard: **⌘/Ctrl+S** apply, **Esc** discard.
+   (see the `?` hint).  Keyboard: **⌘/Ctrl+S** apply, **⇧⌘R** reload, **Esc** discard. **Export** /
+**Import** JSON backups of curve settings (export after Reload; import can
+load a file as draft before the first Reload).
+
+Exported file shape:
+
+```json
+{
+  "version": 1,
+  "exported_at": "2026-05-21T12:00:00.000Z",
+  "source": "npb-console",
+  "settings": {
+    "curve_cc": 15.0,
+    "curve_cv": 55.2,
+    "curve_config": 2180,
+    "chg_rst_vbat": 48.0
+  }
+}
+```
 3. **Device info** — model, serial, firmware, etc. from `MFR_*` registers.
 4. **Activity log** — persisted in `localStorage` across refreshes.
 
@@ -134,9 +184,11 @@ The header shows **connected** (with CAN latency), **status pills** from
 the **output** switch.
 
 **Connection status** uses **Server-Sent Events** (`/api/stream`): one
-shared server-side CAN poller fans out to every browser tab (1 read per
-3 s total, not per client).  The chip shows `connected · <latency ms>`
-and only flips to disconnected after **two** consecutive failed reads.
+shared server-side CAN poller fans out to every browser tab.  Each tick
+reads operation plus fault/charge/system status for the header pills.
+The chip shows `connected · <latency ms>` and only flips to disconnected
+after **two** consecutive failed reads.  On first connect the UI auto-
+reloads settings once (manual Reload still available anytime).
 The server auto-reconnects the python-can bus after repeated `CanError`s
 (USB unplug / `slcand` restart) without restarting the container.
 
@@ -277,14 +329,15 @@ pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 
-76 tests, runs in <1 s.  No CAN hardware required.
+78 tests, runs in <1 s.  No CAN hardware required.
 
 ## HTTP API (all JSON)
 
 | route                  | method | purpose                                       |
 |------------------------|--------|-----------------------------------------------|
+| `/api/health`          | GET    | `{ok, demo, connected}` for scripts / healthchecks |
 | `/api/registers`       | GET    | static metadata for every register            |
-| `/api/read?names=…`    | GET    | read named registers (or all if omitted)      |
+| `/api/read?names=…`    | GET    | read named registers (paced batch, one lock per read) |
 | `/api/status`          | GET    | decoded fault / charge / config bitfields     |
 | `/api/device_info`     | GET    | model, serial, firmware, etc.                 |
 | `/api/write`           | POST   | `{settings: {curve_cc: 15, …}, cycle: true}`  |

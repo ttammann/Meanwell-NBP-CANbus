@@ -24,11 +24,23 @@ let currentValues = {};
 let currentCurveConfig = null;     // raw 16-bit value last seen on the wire
 let currentRestartV    = null;     // last seen chg_rst_vbat in volts
 
-// Charge-curve preview defaults — used when no value is in the form yet
-// (e.g. before the first reload).  These mirror the README's "Suggested
-// 16S LFP values" so the preview is sensible from page load even before
-// "Reload from charger" has been clicked.
+// Suggested 16S LFP values (README) — used only after Reload or a 5s delay.
 const CURVE_DEFAULTS = { cc: 15.0, cv: 55.2, fv: 55.2, tc: 5.0 };
+const SETTINGS_DEFAULTS = {
+  curve_cc: 15.0, curve_cv: 55.2, curve_fv: 55.2, curve_tc: 5.0,
+  curve_cc_timeout: 900, curve_cv_timeout: 60, curve_fv_timeout: 60,
+  chg_rst_vbat: 48.0,
+};
+const DEFAULT_CURVE_CONFIG = 0x0884;
+
+let curveDefaultsAllowed = false;
+let suggestedDefaultsTimer = null;
+let hasReloadedFromCharger = false;
+let _reloadInFlight = false;
+let _modalReturnFocus = null;
+
+const SETTINGS_EXPORT_VERSION = 1;
+const SETTINGS_EXPORT_KEYS = SETTING_KEYS.concat(FRIENDLY_KEYS);
 
 // Activity log — kept in memory + mirrored to localStorage so a refresh
 // (and the browser remembering session state) doesn't wipe context.
@@ -82,6 +94,7 @@ function setConn(state, text, latencyMs) {
   const el = document.getElementById('conn');
   el.className = 'chip conn ' + state;
   document.getElementById('conn-text').textContent = text;
+  updateOnoffHint(state === 'ok');
   const lat = document.getElementById('conn-lat');
   if (lat) {
     lat.textContent = (typeof latencyMs === 'number')
@@ -94,13 +107,68 @@ function setConn(state, text, latencyMs) {
     : '';
 }
 
-async function fetchJSON(url, opts) {
+function _sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchJSON(url, opts, retried) {
   const r = await fetch(url, opts);
   if (!r.ok) {
+    const retryAfter = parseInt(r.headers.get('Retry-After') || '0', 10);
+    if (r.status === 503 && retryAfter > 0 && !retried) {
+      await _sleep(retryAfter * 1000);
+      return fetchJSON(url, opts, true);
+    }
     const err = await r.json().catch(() => ({error: r.statusText}));
     throw new Error(err.error || r.statusText);
   }
   return r.json();
+}
+
+function updateOnoffHint(connected) {
+  const hint = document.getElementById('onoff-hint');
+  const sw = document.getElementById('onoff');
+  if (!hint) return;
+  if (!connected) {
+    hint.textContent = 'Waiting for connection before output can be toggled.';
+  } else if (sw && sw.disabled) {
+    hint.textContent = 'Reading output state…';
+  } else {
+    hint.textContent = 'Toggles charger output. You will be asked to confirm.';
+  }
+}
+
+function hideReloadBanner() {
+  const b = document.getElementById('reload-banner');
+  if (b) b.hidden = true;
+}
+
+function updatePreviewMeta(model) {
+  const el = document.getElementById('preview-meta');
+  if (!el) return;
+  const m = model && String(model).trim() ? String(model).trim() : 'charger';
+  el.textContent = `3-stage · ${m} · 48 V LFP`;
+}
+
+function updateConfigSummary() {
+  const el = document.getElementById('config-summary');
+  if (!el) return;
+  if (currentCurveConfig === null) {
+    el.textContent = 'Reload from charger to see active curve configuration.';
+    return;
+  }
+  let text = _decodeCurveConfigBrief(currentCurveConfig);
+  if (currentRestartV !== null) {
+    text += ` · restart below ${currentRestartV.toFixed(1)} V`;
+  }
+  el.textContent = text;
+}
+
+function clearLog() {
+  _logRows = [];
+  _persistLog();
+  _renderLog();
+  log('log cleared', 'ok');
 }
 
 function fmt(v, decimals) {
@@ -212,8 +280,7 @@ function buildSettingsTable() {
         inp.classList.add('changed');
       }
       updateDirtyCount();
-      // Redraw the curve preview whenever one of the four curve shapers
-      // changes — readCurveInputs handles invalid / empty inputs gracefully.
+      // Redraw when a curve shaper changes (plot only if all four are set).
       if (['curve_cc','curve_cv','curve_fv','curve_tc'].includes(name)) {
         drawCurvePreview();
       }
@@ -274,6 +341,22 @@ function updateDirtyCount() {
     discard.disabled = true;
   }
   syncActionButtons(dirty, invalid);
+  updateFormActionState();
+}
+
+function updateFormActionState() {
+  const exp = document.getElementById('export-settings');
+  const imp = document.getElementById('import-settings');
+  const ready = hasReloadedFromCharger;
+  if (exp) {
+    exp.disabled = !ready;
+    exp.title = ready ? 'Download current charger settings as JSON'
+      : 'Reload from charger first';
+  }
+  if (imp) {
+    imp.disabled = !Object.keys(registers).length;
+    imp.title = 'Load settings from a JSON file into the form';
+  }
 }
 
 // ---------- friendly config row (CURVE_CONFIG checkboxes + restart V) ------
@@ -313,7 +396,7 @@ function paintConfigRow(values) {
   document.getElementById('cfg-cvtoe').checked   = values.cvTimeoutEn;
   document.getElementById('cfg-cctoe').checked   = values.ccTimeoutEn;
   document.getElementById('cfg-fvtoe').checked   = values.fvTimeoutEn;
-  if (typeof values.restartV === 'number') {
+  if (typeof values.restartV === 'number' && !Number.isNaN(values.restartV)) {
     document.getElementById('cfg-restart-v').value = values.restartV.toFixed(1);
   }
   applyRestartGroupState();
@@ -457,17 +540,77 @@ let userToggling = 0;
 // from the form inputs and redraws on every keystroke.  A traveller dot
 // loops along both curves so the page never feels static.
 
+function allowSettingsDefaults() {
+  curveDefaultsAllowed = true;
+}
+
+function cancelSuggestedDefaultsTimer() {
+  if (suggestedDefaultsTimer) {
+    clearTimeout(suggestedDefaultsTimer);
+    suggestedDefaultsTimer = null;
+  }
+}
+
+function scheduleSuggestedDefaults() {
+  cancelSuggestedDefaultsTimer();
+  suggestedDefaultsTimer = setTimeout(() => {
+    suggestedDefaultsTimer = null;
+    if (hasReloadedFromCharger) return;
+    applySuggestedDefaults();
+    log('filled suggested 16S LFP defaults — Reload from charger to read the unit', 'ok');
+  }, 5000);
+}
+
+/** Fill form + preview with README suggested values (not from CAN). */
+function applySuggestedDefaults() {
+  if (!registers || !Object.keys(registers).length) return;
+  allowSettingsDefaults();
+  for (const name of SETTING_KEYS) {
+    const val = SETTINGS_DEFAULTS[name];
+    if (val === undefined) continue;
+    currentValues[name] = val;
+    const inp = document.querySelector(`#settings input[data-name="${name}"]`);
+    if (inp) {
+      const formatted = formatInputValue(val, registers[name]);
+      inp.value = formatted;
+      inp.placeholder = `(skip — ${formatted})`;
+      inp.classList.remove('changed', 'invalid', 'skipped');
+      inp.title = '';
+    }
+    const raw = document.querySelector(`#settings [data-raw="${name}"]`);
+    if (raw) {
+      const reg = registers[name];
+      const rawN = reg.scale === 1
+        ? (Number(val) & 0xFFFF)
+        : Math.round(Number(val) / reg.scale);
+      raw.textContent = `raw=${rawN}`;
+    }
+  }
+  currentRestartV = SETTINGS_DEFAULTS.chg_rst_vbat;
+  currentCurveConfig = DEFAULT_CURVE_CONFIG;
+  const decoded = decodeCurveConfig(currentCurveConfig);
+  paintConfigRow({...decoded, restartV: currentRestartV ?? 48.0});
+  document.getElementById('config-row').classList.remove('unloaded');
+  document.querySelectorAll('.check.inline-check.unloaded')
+    .forEach(el => el.classList.remove('unloaded'));
+  refreshRawHexFromState();
+  updateDirtyCount();
+  drawCurvePreview();
+  updateConfigSummary();
+}
+
 function readCurveInputs() {
-  // Best-effort read: if a field is empty or invalid, fall back to the
-  // last-known charger value, then to the LFP default.
-  function pick(name, fallbackKey) {
+  function pick(name, key) {
     const inp = document.querySelector(`#settings input[data-name="${name}"]`);
     if (inp && inp.value.trim() !== '' && !inp.classList.contains('invalid')) {
       const v = parseFloat(inp.value);
       if (!Number.isNaN(v)) return v;
     }
-    if (currentValues[name] !== undefined) return currentValues[name];
-    return CURVE_DEFAULTS[fallbackKey];
+    if (currentValues[name] !== undefined && currentValues[name] !== null) {
+      return currentValues[name];
+    }
+    if (curveDefaultsAllowed) return CURVE_DEFAULTS[key];
+    return null;
   }
   return {
     cc: pick('curve_cc', 'cc'),
@@ -475,6 +618,11 @@ function readCurveInputs() {
     fv: pick('curve_fv', 'fv'),
     tc: pick('curve_tc', 'tc'),
   };
+}
+
+function curveInputsComplete(curve) {
+  return curve.cc !== null && curve.cv !== null
+      && curve.fv !== null && curve.tc !== null;
 }
 
 // Plot coordinate system. The diagram in the manual divides the x-axis
@@ -580,7 +728,21 @@ function buildCurvePaths({cc, cv, fv, tc}) {
 }
 
 function drawCurvePreview() {
+  const wrap = document.querySelector('.curve-preview');
   const curve = readCurveInputs();
+  if (!curveInputsComplete(curve)) {
+    wrap?.classList.add('is-empty');
+    for (const id of ['curve-i', 'curve-v', 'curve-i-area', 'curve-v-area']) {
+      document.getElementById(id)?.setAttribute('d', '');
+    }
+    document.getElementById('curve-stages').innerHTML = '';
+    document.getElementById('curve-grid').innerHTML = '';
+    document.getElementById('curve-axis-titles').innerHTML = '';
+    document.getElementById('curve-annotations').innerHTML = '';
+    curveSamples = [];
+    return;
+  }
+  wrap?.classList.remove('is-empty');
   const { iPath, vPath, samples, stageX, box } = buildCurvePaths(curve);
 
   document.getElementById('curve-i').setAttribute('d', iPath);
@@ -705,6 +867,7 @@ let curveT = 0;     // 0..1 progress through the full curve
 let lastFrame = performance.now();
 
 function tickCurveDot(now) {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const dt = (now - lastFrame) / 1000;
   lastFrame = now;
   // 8 seconds per full traversal.
@@ -758,14 +921,19 @@ function startStream() {
     try { data = JSON.parse(e.data); } catch { return; }
     if (!data.connected) {
       setConn('err', data.error ? 'CAN error' : 'no response');
+      updateOnoffHint(false);
       return;
     }
     setConn('ok', 'connected', data.latency_ms);
+    if (data.fault_status || data.chg_status || data.system_status) {
+      paintHeaderStatus(data);
+    }
     if (data.operation !== null && data.operation !== undefined
         && Date.now() - userToggling > 2500) {
       const sw = document.getElementById('onoff');
       sw.disabled = false;
       sw.checked = data.operation === 1;
+      updateOnoffHint(true);
     }
   });
 
@@ -797,32 +965,60 @@ function _pillClassForFlag(kind, shortName) {
   return '';
 }
 
-function _flagsToPillHtml(flags, kind) {
-  if (!flags || !flags.length) return [];
-  return flags.map(full => {
+function paintHeaderStatus(data) {
+  const el = document.getElementById('header-status');
+  if (!el) return;
+  const chg = data.chg_status || [];
+  const fault = data.fault_status || [];
+  const sys = data.system_status || [];
+  el.replaceChildren();
+  const addPill = (full, kind) => {
     const short = full.includes('(') ? full.split(' (')[0].trim() : full;
-    const cls   = _pillClassForFlag(kind, short);
-    return `<span class="pill${cls ? ' ' + cls : ''}" title="${full}">${short}</span>`;
-  });
+    const cls = _pillClassForFlag(kind, short);
+    const span = document.createElement('span');
+    span.className = 'pill' + (cls ? ' ' + cls : '');
+    span.title = full;
+    span.textContent = short;
+    el.appendChild(span);
+  };
+  for (const f of chg) addPill(f, 'chg');
+  if (fault.length) {
+    for (const f of fault) addPill(f, 'fault');
+  } else {
+    const ok = document.createElement('span');
+    ok.className = 'pill ok';
+    ok.title = 'No active faults';
+    ok.textContent = 'OK';
+    el.appendChild(ok);
+  }
+  for (const f of sys) addPill(f, 'sys');
+  if (!el.childElementCount) {
+    const ok = document.createElement('span');
+    ok.className = 'pill ok';
+    ok.title = 'No active flags';
+    ok.textContent = 'ok';
+    el.appendChild(ok);
+  }
 }
 
 async function refreshStatus() {
-  const el = document.getElementById('header-status');
-  if (!el) return;
   try {
     const s = await fetchJSON('/api/status');
-    const faultFlags = s.fault_status?.flags || [];
-    const faultHtml = faultFlags.length
-      ? _flagsToPillHtml(faultFlags, 'fault').join('')
-      : '<span class="pill ok" title="No active faults">OK</span>';
-    const html = [
-      ..._flagsToPillHtml(s.chg_status?.flags, 'chg'),
-      faultHtml,
-      ..._flagsToPillHtml(s.system_status?.flags, 'sys'),
-    ].join('');
-    el.innerHTML = html || '<span class="pill ok" title="No active flags">ok</span>';
+    paintHeaderStatus({
+      chg_status:    s.chg_status?.flags || [],
+      fault_status: s.fault_status?.flags || [],
+      system_status: s.system_status?.flags || [],
+    });
   } catch {
-    el.innerHTML = '<span class="pill dim" title="Could not read status">…</span>';
+    const el = document.getElementById('header-status');
+    if (el) {
+      el.replaceChildren();
+      const dim = document.createElement('span');
+      dim.className = 'pill dim';
+      dim.title = 'Could not read status';
+      dim.textContent = '…';
+      el.appendChild(dim);
+    }
   }
 }
 
@@ -853,6 +1049,27 @@ async function refreshDeviceInfo() {
       dateText = `20${dateText.slice(0,2)}-${dateText.slice(2,4)}-${dateText.slice(4,6)}`;
     }
     setVal('info-date', dateText);
+    const vinEl = document.getElementById('info-vin');
+    const tempEl = document.getElementById('info-temp');
+    if (vinEl) {
+      if (d.vin !== null && d.vin !== undefined) {
+        vinEl.textContent = fmt(d.vin, 1) + ' V';
+        vinEl.classList.remove('empty');
+      } else {
+        vinEl.textContent = 'unavailable';
+        vinEl.classList.add('empty');
+      }
+    }
+    if (tempEl) {
+      if (d.temp !== null && d.temp !== undefined) {
+        tempEl.textContent = fmt(d.temp, 1) + ' °C';
+        tempEl.classList.remove('empty');
+      } else {
+        tempEl.textContent = 'unavailable';
+        tempEl.classList.add('empty');
+      }
+    }
+    updatePreviewMeta(d.model);
   } catch (e) { /* silent — device info isn't critical to UI */ }
 }
 
@@ -864,17 +1081,25 @@ async function loadRegisters() {
 }
 
 async function reloadFromCharger() {
+  if (_reloadInFlight) return;
+  cancelSuggestedDefaultsTimer();
+  _reloadInFlight = true;
+  const reloadBtn = document.getElementById('reload');
+  reloadBtn.classList.add('writing');
+  reloadBtn.disabled = true;
   try {
+    allowSettingsDefaults();
     const allKeys = SETTING_KEYS.concat(FRIENDLY_KEYS);
     const data = await fetchJSON('/api/read?names=' + allKeys.join(','));
-    // table rows
+    // table rows — charger value when present, else suggested default
     for (const name of SETTING_KEYS) {
       const v = data[name];
-      if (!v || v.value === null) continue;
-      currentValues[name] = v.value;
+      const value = (v && v.value !== null) ? v.value : SETTINGS_DEFAULTS[name];
+      if (value === undefined) continue;
+      currentValues[name] = value;
       const inp = document.querySelector(`#settings input[data-name="${name}"]`);
       if (inp) {
-        const formatted = formatInputValue(v.value, registers[name]);
+        const formatted = formatInputValue(value, registers[name]);
         inp.value = formatted;
         // Placeholder shows the current value so if the user clears the
         // field (= "skip on Apply"), they can see what's being preserved.
@@ -883,14 +1108,25 @@ async function reloadFromCharger() {
         inp.title = '';
       }
       const raw = document.querySelector(`#settings [data-raw="${name}"]`);
-      if (raw) raw.textContent = `raw=${v.raw}`;
-    }
-    // friendly config row
-    if (data.curve_config && data.curve_config.raw !== null) {
-      currentCurveConfig = data.curve_config.raw;
+      if (raw) {
+        const reg = registers[name];
+        const rawN = (v && v.raw !== null)
+          ? v.raw
+          : (reg.scale === 1
+              ? (Number(value) & 0xFFFF)
+              : Math.round(Number(value) / reg.scale));
+        raw.textContent = `raw=${rawN}`;
+      }
     }
     if (data.chg_rst_vbat && data.chg_rst_vbat.value !== null) {
       currentRestartV = data.chg_rst_vbat.value;
+    } else {
+      currentRestartV = SETTINGS_DEFAULTS.chg_rst_vbat;
+    }
+    if (data.curve_config && data.curve_config.raw !== null) {
+      currentCurveConfig = data.curve_config.raw;
+    } else if (currentCurveConfig === null) {
+      currentCurveConfig = DEFAULT_CURVE_CONFIG;
     }
     if (currentCurveConfig !== null) {
       const decoded = decodeCurveConfig(currentCurveConfig);
@@ -903,11 +1139,147 @@ async function reloadFromCharger() {
     refreshRawHexFromState();
     updateDirtyCount();
     drawCurvePreview();
-    refreshStatus();
+    updateConfigSummary();
+    hasReloadedFromCharger = true;
+    hideReloadBanner();
     log('reloaded settings from charger', 'ok');
   } catch (e) {
     log('reload failed: ' + e.message, 'err');
+  } finally {
+    reloadBtn.classList.remove('writing');
+    reloadBtn.disabled = false;
+    _reloadInFlight = false;
   }
+}
+
+function _applySettingsToForm(settings, markAsChanged) {
+  for (const name of SETTING_KEYS) {
+    if (!(name in settings)) continue;
+    const val = settings[name];
+    const inp = document.querySelector(`#settings input[data-name="${name}"]`);
+    if (!inp || !registers[name]) continue;
+    inp.value = formatInputValue(val, registers[name]);
+    inp.classList.remove('invalid', 'skipped');
+    inp.title = '';
+    if (markAsChanged) {
+      const orig = currentValues[name];
+      inp.classList.toggle('changed',
+        orig === undefined || Math.abs(Number(val) - Number(orig)) > 1e-9);
+    } else {
+      inp.classList.remove('changed');
+      currentValues[name] = val;
+    }
+    const rawCell = document.querySelector(`#settings [data-raw="${name}"]`);
+    if (rawCell) {
+      const reg = registers[name];
+      const raw = reg.scale === 1
+        ? (Number(val) & 0xFFFF)
+        : Math.round(Number(val) / reg.scale);
+      rawCell.textContent = `raw=${raw}`;
+    }
+  }
+  if ('curve_config' in settings) {
+    currentCurveConfig = Number(settings.curve_config) & 0xFFFF;
+  }
+  if ('chg_rst_vbat' in settings) {
+    currentRestartV = Number(settings.chg_rst_vbat);
+  }
+  if (currentCurveConfig !== null) {
+    const decoded = decodeCurveConfig(currentCurveConfig);
+    paintConfigRow({...decoded, restartV: currentRestartV ?? 48.0});
+    document.getElementById('config-row').classList.remove('unloaded');
+    document.querySelectorAll('.check.inline-check.unloaded')
+      .forEach(el => el.classList.remove('unloaded'));
+  }
+  refreshRawHexFromState();
+  updateDirtyCount();
+  drawCurvePreview();
+  updateConfigSummary();
+}
+
+function exportSettings() {
+  if (!hasReloadedFromCharger) {
+    log('export requires reloading from charger first', 'err');
+    return;
+  }
+  const settings = {};
+  for (const name of SETTINGS_EXPORT_KEYS) {
+    if (name === 'curve_config' && currentCurveConfig !== null) {
+      settings[name] = currentCurveConfig;
+    } else if (name === 'chg_rst_vbat' && currentRestartV !== null) {
+      settings[name] = currentRestartV;
+    } else if (currentValues[name] !== undefined) {
+      settings[name] = currentValues[name];
+    }
+  }
+  const payload = {
+    version: SETTINGS_EXPORT_VERSION,
+    exported_at: new Date().toISOString(),
+    source: 'npb-console',
+    settings,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)],
+    { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'npb-settings-' + new Date().toISOString().slice(0, 10) + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+  log('exported settings to JSON file', 'ok');
+}
+
+function applyImportedSettings(data) {
+  if (!data || data.version !== SETTINGS_EXPORT_VERSION) {
+    throw new Error('unsupported settings file (expected version 1)');
+  }
+  const settings = data.settings;
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+    throw new Error('settings must be an object');
+  }
+  for (const name of Object.keys(settings)) {
+    if (!SETTINGS_EXPORT_KEYS.includes(name)) {
+      throw new Error(`unknown register ${name}`);
+    }
+    if (!registers[name]) {
+      throw new Error('register metadata not loaded yet');
+    }
+    const reg = registers[name];
+    const val = settings[name];
+    if (reg.scale === 1 && !reg.unit) {
+      const n = Number(val);
+      if (!Number.isInteger(n) || n < 0 || n > 0xFFFF) {
+        throw new Error(`${name} must be a 16-bit integer`);
+      }
+    } else if (reg.range) {
+      const num = Number(val);
+      if (Number.isNaN(num) || num < reg.range[0] || num > reg.range[1]) {
+        throw new Error(`${name} must be in [${reg.range[0]}, ${reg.range[1]}]`);
+      }
+    }
+  }
+  const markAsChanged = hasReloadedFromCharger;
+  _applySettingsToForm(settings, markAsChanged);
+  if (!hasReloadedFromCharger) {
+    log('imported settings as draft — Reload from charger to compare with hardware', 'warn');
+  } else {
+    log('imported settings into form (Apply to write)', 'ok');
+  }
+}
+
+function importSettingsFromFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      applyImportedSettings(JSON.parse(reader.result));
+    } catch (e) {
+      log('import failed: ' + e.message, 'err');
+    }
+  };
+  reader.onerror = () => log('import failed: could not read file', 'err');
+  reader.readAsText(file);
 }
 
 // ---------- diff preview + confirm modal -----------------------------------
@@ -992,37 +1364,67 @@ function gatherDirtyWrites() {
 
 let _pendingWrites = null;  // {settings, diff} captured when modal opens
 
+function _buildDiffBody(container, diff) {
+  container.replaceChildren();
+  for (const d of diff) {
+    const row = document.createElement('div');
+    row.className = 'diff-row';
+    const label = document.createElement('div');
+    label.className = 'label';
+    label.appendChild(document.createTextNode(d.desc));
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = d.name;
+    label.appendChild(name);
+    const val = document.createElement('div');
+    val.className = 'val';
+    const old = document.createElement('span');
+    old.className = 'old';
+    old.textContent = d.oldText;
+    const arrow = document.createElement('span');
+    arrow.className = 'arrow';
+    arrow.textContent = '→';
+    const neu = document.createElement('span');
+    neu.className = 'new';
+    neu.textContent = d.newText;
+    val.append(old, arrow, neu);
+    row.append(label, val);
+    container.appendChild(row);
+  }
+}
+
+function _setModalWarn(isOn) {
+  const warn = document.getElementById('diff-warn');
+  warn.replaceChildren();
+  if (isOn) {
+    const strong = document.createElement('strong');
+    strong.textContent = 'Heads up:';
+    warn.appendChild(strong);
+    warn.appendChild(document.createTextNode(
+      ' the output is currently ON. Applying will briefly switch the charger OFF, '
+      + 'write all changes, then switch it back ON — a connected battery will see '
+      + 'charge current drop and resume.'));
+  } else {
+    warn.textContent = 'Output is currently OFF; settings will be written directly '
+      + 'without a power cycle.';
+  }
+}
+
 async function openDiffModal() {
   const { settings, diff } = gatherDirtyWrites();
   if (!Object.keys(settings).length) return;
   _pendingWrites = { settings, diff };
 
-  const body = document.getElementById('diff-body');
-  body.innerHTML = diff.map(d => `
-    <div class="diff-row">
-      <div class="label">${d.desc}<span class="name">${d.name}</span></div>
-      <div class="val">
-        <span class="old">${d.oldText}</span>
-        <span class="arrow">→</span>
-        <span class="new">${d.newText}</span>
-      </div>
-    </div>
-  `).join('');
+  _buildDiffBody(document.getElementById('diff-body'), diff);
 
-  // Ask the charger whether the output is currently ON, so the cycle
-  // warning is accurate (no warning if it's already off).
   let isOn = false;
   try {
     const r = await fetchJSON('/api/operation');
     isOn = !!r.on;
-  } catch { /* keep isOn=false; we'll still write, just less precise warning */ }
-  const warn = document.getElementById('diff-warn');
-  warn.innerHTML = isOn
-    ? '<strong>Heads up:</strong> the output is currently ON. Applying will briefly '
-    + 'switch the charger OFF, write all changes, then switch it back ON — a '
-    + 'connected battery will see charge current drop and resume.'
-    : 'Output is currently OFF; settings will be written directly without a power cycle.';
+  } catch { /* keep isOn=false */ }
+  _setModalWarn(isOn);
 
+  _modalReturnFocus = document.activeElement;
   document.getElementById('diff-modal').hidden = false;
   document.getElementById('diff-cancel').focus();
 }
@@ -1030,6 +1432,10 @@ async function openDiffModal() {
 function closeDiffModal() {
   document.getElementById('diff-modal').hidden = true;
   _pendingWrites = null;
+  if (_modalReturnFocus && typeof _modalReturnFocus.focus === 'function') {
+    _modalReturnFocus.focus();
+  }
+  _modalReturnFocus = null;
 }
 
 async function confirmDiffModal() {
@@ -1076,6 +1482,7 @@ async function applyChanges(settings) {
     log('write failed: ' + e.message, 'err');
   } finally {
     apply.classList.remove('writing');
+    updateDirtyCount();
   }
 }
 
@@ -1095,7 +1502,7 @@ function discardChanges() {
   }
   if (currentCurveConfig !== null) {
     paintConfigRow({...decodeCurveConfig(currentCurveConfig),
-                    restartV: currentRestartV ?? 48.0});
+                    restartV: currentRestartV});
   }
   refreshRawHexFromState();
   updateDirtyCount();
@@ -1156,7 +1563,7 @@ document.getElementById('cfg-raw').addEventListener('input', (e) => {
     // the user sees what their hex implies, and update currentCurveConfig
     // proxy in a *pending* way (not committing to wire yet).
     const decoded = decodeCurveConfig(n);
-    paintConfigRow({...decoded, restartV: currentRestartV ?? 48.0});
+    paintConfigRow({...decoded, restartV: currentRestartV});
     // Manually mark the friendly checkboxes as changed since paintConfigRow
     // would have compared to the *original* currentCurveConfig.
     refreshConfigRowChangedClasses();
@@ -1168,6 +1575,17 @@ document.getElementById('cfg-raw').addEventListener('input', (e) => {
 
 document.getElementById('apply').addEventListener('click', openDiffModal);
 document.getElementById('reload').addEventListener('click', reloadFromCharger);
+document.getElementById('reload-banner-btn')?.addEventListener('click', reloadFromCharger);
+document.getElementById('export-settings')?.addEventListener('click', exportSettings);
+document.getElementById('import-settings')?.addEventListener('click', () => {
+  document.getElementById('import-file')?.click();
+});
+document.getElementById('import-file')?.addEventListener('change', (e) => {
+  const file = e.target.files && e.target.files[0];
+  importSettingsFromFile(file);
+  e.target.value = '';
+});
+document.getElementById('log-clear')?.addEventListener('click', clearLog);
 document.getElementById('discard').addEventListener('click', discardChanges);
 document.getElementById('diff-cancel').addEventListener('click', closeDiffModal);
 document.getElementById('diff-confirm').addEventListener('click', confirmDiffModal);
@@ -1177,15 +1595,34 @@ document.getElementById('diff-modal').addEventListener('click', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
-  const inModal = !document.getElementById('diff-modal').hidden;
-  // Cmd/Ctrl-S → open the apply diff modal
+  const modal = document.getElementById('diff-modal');
+  const inModal = modal && !modal.hidden;
+  if (inModal && e.key === 'Tab') {
+    const box = modal.querySelector('.modal');
+    const focusable = [...box.querySelectorAll('button, [href], input, select, textarea')]
+      .filter(el => !el.disabled);
+    if (focusable.length) {
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }
   if ((e.metaKey || e.ctrlKey) && e.key === 's') {
     e.preventDefault();
     if (!document.getElementById('apply').disabled) openDiffModal();
     return;
   }
-  // Cmd/Ctrl-R is browser reload; we don't want to hijack it (the user
-  // can use the visible Reload button).  Esc cancels modal / discards.
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+    e.preventDefault();
+    reloadFromCharger();
+    return;
+  }
   if (e.key === 'Escape') {
     if (inModal) { closeDiffModal(); return; }
     if (!document.getElementById('discard').disabled) discardChanges();
@@ -1194,6 +1631,13 @@ document.addEventListener('keydown', (e) => {
 
 document.getElementById('onoff').addEventListener('change', async (e) => {
   const target = e.target.checked;
+  const msg = target
+    ? 'Turn charger OUTPUT ON?\n\nA connected battery may begin charging.'
+    : 'Turn charger OUTPUT OFF?\n\nCharge current will stop.';
+  if (!confirm(msg)) {
+    e.target.checked = !target;
+    return;
+  }
   userToggling = Date.now();
   e.target.disabled = true;
   try {
@@ -1209,7 +1653,7 @@ document.getElementById('onoff').addEventListener('change', async (e) => {
 
 // Boot sequence: restore persisted log (so a refresh doesn't lose
 // context), load register metadata + render empty form, draw the curve
-// preview with defaults so the page isn't blank, then kick off the rAF
+// empty curve preview until values are loaded, then kick off the rAF
 // traveller loop, the SSE connection stream, and the (rare) device-info
 // poll.
 _loadPersistedLog();
@@ -1217,14 +1661,12 @@ loadRegisters()
   .then(() => {
     drawCurvePreview();
     refreshRawHexFromState();
-    updateDirtyCount();   // Reload is primary until the user has edits
+    updateDirtyCount();
+    scheduleSuggestedDefaults();
   })
   .catch(e => log('register load failed: ' + e.message, 'err'));
 refreshDeviceInfo();
 refreshStatus();
 startStream();
 requestAnimationFrame((t) => { lastFrame = t; tickCurveDot(t); });
-// Device info + status don't change often; refresh occasionally in case
-// we reconnect to a different unit or the charger transitions stage.
 setInterval(refreshDeviceInfo, 60000);
-setInterval(refreshStatus, 30000);

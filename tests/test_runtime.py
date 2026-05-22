@@ -16,7 +16,10 @@ import pytest
 import can
 
 from charger_app import MeanWellCharger, REGISTERS, RANGES, main as cli_main
-from charger_web import FakeBus, StateBroadcaster, app, _parse_write_request
+from charger_web import (
+    FakeBus, StateBroadcaster, app, _parse_write_request,
+    _read_registers_paced,
+)
 import charger_web
 
 
@@ -455,6 +458,24 @@ def web_client(monkeypatch, patched_lock):
     monkeypatch.setattr(charger_web, "_bus_args", {"demo": True})
     app.config["TESTING"] = True
     return app.test_client()
+
+
+class TestReadRegistersPaced:
+    def test_paced_batch_read(self, monkeypatch, patched_lock):
+        monkeypatch.setattr(charger_web, "charger", _make_charger())
+        out = _read_registers_paced(["operation", "curve_cc", "curve_cv"])
+        assert out["operation"]["raw"] == 1
+        assert out["curve_cc"]["value"] == pytest.approx(15.0, rel=1e-3)
+        assert out["curve_cv"]["value"] == pytest.approx(55.20, rel=1e-3)
+
+
+class TestApiHealth:
+    def test_health_endpoint(self, web_client):
+        r = web_client.get('/api/health')
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body['ok'] is True
+        assert body['demo'] is True
 
 
 class TestApiWriteEndpoint:

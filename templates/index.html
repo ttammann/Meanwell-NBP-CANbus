@@ -7,9 +7,6 @@
 <!-- Inline SVG favicon mirrors the brand mark so the browser tab matches
      the on-page logo (and silences /favicon.ico 404s on every page load). -->
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M13 2 L4 14 h7 l-1 8 9-12 h-7 z'/></svg>">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
 </head>
 <body>
@@ -31,24 +28,28 @@
     <div class="header-actions">
       <span id="conn" class="chip conn" title="">
         <span class="dot"></span>
-        <span id="conn-text">connecting</span>
-        <span id="conn-lat" class="conn-lat"></span>
+        <span id="conn-text" aria-live="polite" aria-atomic="true">connecting</span>
+        <span id="conn-lat" class="conn-lat" aria-hidden="true"></span>
       </span>
       <div class="header-status" id="header-status" aria-label="Charger status"></div>
       <label class="master">
         <span class="lbl">output</span>
         <span class="switch">
-          <input type="checkbox" id="onoff" disabled>
+          <input type="checkbox" id="onoff" disabled
+                 aria-describedby="onoff-hint">
           <span class="track"></span>
         </span>
       </label>
+      <span id="onoff-hint" class="sr-only">Waiting for connection before output can be toggled.</span>
     </div>
   </header>
 
   <!-- live SVG mirror of the manual 3-stage curve diagram -->
   <div class="panel">
-    <h2>Preview <em>charge curve</em><span class="meta" id="preview-meta">3-stage · NPB-1700-48 · 48 V LFP</span></h2>
-    <div class="curve-preview" aria-hidden="true">
+    <h2>Preview <em>charge curve</em><span class="meta" id="preview-meta">3-stage · 48 V LFP</span></h2>
+    <p class="sr-only" id="curve-sr-desc">Illustrative charge curve from CC, CV, FV, and TC settings once loaded. Not live telemetry from the charger.</p>
+    <div class="curve-preview is-empty" aria-describedby="curve-sr-desc">
+      <p class="curve-empty" id="curve-empty">Plot appears after Reload from charger, or suggested defaults in a few seconds.</p>
       <svg id="curve-svg" viewBox="0 0 780 320" preserveAspectRatio="xMidYMid meet">
         <!-- stage background tints + dividers + stage-name labels -->
         <g id="curve-stages"></g>
@@ -84,7 +85,25 @@
               title="Edit a field to mark it as a change.  Empty fields are skipped on Apply — the charger keeps whatever it had.  Click Apply to write all changes in one batch.">?</span>
       </span>
     </h2>
-    <table class="settings"><tbody id="settings"></tbody></table>
+    <div id="reload-banner" class="reload-banner" role="status" aria-live="polite">
+      <span>Settings are not loaded yet. Click <strong>Reload from charger</strong> to read what is stored in the unit before editing.</span>
+      <button type="button" class="primary" id="reload-banner-btn">Reload from charger</button>
+    </div>
+    <div class="settings-scroll">
+      <table class="settings">
+        <thead>
+          <tr>
+            <th scope="col">Setting</th>
+            <th scope="col">Value</th>
+            <th scope="col">Unit</th>
+            <th scope="col">Range</th>
+            <th scope="col">Timeout</th>
+            <th scope="col">Raw</th>
+          </tr>
+        </thead>
+        <tbody id="settings"></tbody>
+      </table>
+    </div>
     <div class="config-row unloaded" id="config-row">
       <span class="row-lbl">Config</span>
       <label class="check" id="check-charger-wrap">
@@ -130,12 +149,15 @@
     </details>
     <div class="actions">
       <button class="primary" id="reload">Reload from charger</button>
+      <button type="button" id="export-settings" disabled title="Reload from charger first">Export</button>
+      <button type="button" id="import-settings">Import</button>
+      <input type="file" id="import-file" accept="application/json,.json" hidden>
       <button id="discard" disabled>Discard changes</button>
       <button id="apply" disabled>Apply changes</button>
       <span class="spacer"></span>
-      <span class="pending" id="dirty-count"></span>
+      <span class="pending" id="dirty-count" aria-live="polite" aria-atomic="true"></span>
       <span class="kbd-hint" aria-hidden="true">
-        <kbd>⌘</kbd><kbd>S</kbd> apply · <kbd>⌘</kbd><kbd>R</kbd> reload · <kbd>Esc</kbd> discard
+        <kbd>⌘</kbd><kbd>S</kbd> apply · <kbd>⇧</kbd><kbd>⌘</kbd><kbd>R</kbd> reload · <kbd>Esc</kbd> discard
       </span>
     </div>
   </div>
@@ -184,13 +206,23 @@
         <div class="lbl">Origin</div>
         <div class="val" id="info-loc">–</div>
       </div>
+      <div class="info-cell">
+        <div class="lbl">AC input</div>
+        <div class="val" id="info-vin">–</div>
+      </div>
+      <div class="info-cell">
+        <div class="lbl">Internal temp</div>
+        <div class="val" id="info-temp">–</div>
+      </div>
     </div>
     <div class="config-summary" id="config-summary">––</div>
   </div>
 
   <!-- activity log -->
   <div class="panel">
-    <h2>Activity <em>log</em></h2>
+    <h2>Activity <em>log</em>
+      <button type="button" class="btn-inline" id="log-clear">Clear log</button>
+    </h2>
     <div id="log"></div>
   </div>
 

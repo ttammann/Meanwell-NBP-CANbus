@@ -36,7 +36,7 @@
   html, body {
     margin: 0; padding: 0;
     color: var(--ink);
-    font-family: "Inter", system-ui, sans-serif;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     font-size: 14px;
     -webkit-font-smoothing: antialiased;
   }
@@ -66,7 +66,7 @@
   }
   .brand-logo svg { width: 22px; height: 22px; }
   .brand {
-    font-family: "Fraunces", Georgia, serif;
+    font-family: Georgia, "Times New Roman", serif;
     font-weight: 500;
     font-size: 28px;
     letter-spacing: -0.02em;
@@ -218,7 +218,7 @@
     box-shadow: var(--shadow-sm);
   }
   .panel h2 {
-    font-family: "Fraunces", Georgia, serif;
+    font-family: Georgia, "Times New Roman", serif;
     font-weight: 500;
     font-size: 19px;
     letter-spacing: -0.01em;
@@ -234,7 +234,7 @@
     color: var(--ink-2);
   }
   .panel h2 .meta {
-    font-family: "JetBrains Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     font-size: 11px;
     color: var(--ink-4);
     font-weight: 400;
@@ -242,11 +242,76 @@
     letter-spacing: 0;
     text-transform: uppercase;
   }
+  .panel h2 .btn-inline {
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-3);
+    background: transparent;
+    border: 1px solid var(--line-2);
+    border-radius: 100px;
+    padding: 4px 12px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .panel h2 .btn-inline:hover {
+    color: var(--ink);
+    border-color: var(--accent);
+    background: var(--card-soft);
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .reload-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 16px;
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    background: var(--accent-soft);
+    border: 1px solid var(--line-2);
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--ink-2);
+    line-height: 1.5;
+  }
+  .reload-banner[hidden] { display: none; }
+  .reload-banner strong { color: var(--ink); font-weight: 600; }
+  .reload-banner button { flex-shrink: 0; }
+
+  .settings-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
   /* ---------------- settings table (charge curve, focal point) -------- */
   table.settings {
     width: 100%; border-collapse: collapse;
     font-size: 13px;
   }
+  table.settings thead th {
+    text-align: left;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-4);
+    padding: 0 8px 10px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  table.settings thead th:nth-child(2),
+  table.settings thead th:nth-child(6) { text-align: right; }
   table.settings tr {
     border-bottom: 1px solid var(--line);
     transition: background 0.15s;
@@ -256,7 +321,7 @@
   table.settings td { padding: 13px 8px; vertical-align: middle; }
   table.settings td.desc { color: var(--ink-2); font-weight: 500; }
   table.settings td.desc .name {
-    font-family: "JetBrains Mono", monospace; font-size: 11px;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; font-size: 11px;
     color: var(--ink-4); display: block; margin-top: 3px;
     font-weight: 400;
   }
@@ -265,7 +330,7 @@
     background: var(--card);
     color: var(--ink);
     border: 1px solid var(--line-2); border-radius: 6px;
-    font-family: "JetBrains Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     font-variant-numeric: tabular-nums;
     text-align: right; font-size: 13px;
     transition: border-color 0.15s, box-shadow 0.15s;
@@ -299,12 +364,12 @@
   }
   table.settings .range-cell {
     color: var(--ink-4);
-    font-family: "JetBrains Mono", monospace; font-size: 11px;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; font-size: 11px;
     padding-left: 14px;
   }
   table.settings .raw-cell {
     color: var(--ink-4);
-    font-family: "JetBrains Mono", monospace; font-size: 11px;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; font-size: 11px;
     text-align: right;
   }
 
@@ -339,14 +404,14 @@
   }
   .config-row.unloaded::after {
     content: "Reload from charger to edit";
-    font-family: "Fraunces", Georgia, serif;
+    font-family: Georgia, "Times New Roman", serif;
     font-style: italic;
     font-size: 12px;
     color: var(--ink-3);
     pointer-events: auto;
   }
   .config-row .row-lbl {
-    font-family: "Fraunces", Georgia, serif;
+    font-family: Georgia, "Times New Roman", serif;
     font-style: italic;
     font-weight: 500;
     font-size: 15px;
@@ -422,7 +487,7 @@
     background: var(--card);
     color: var(--ink);
     border: 1px solid var(--line-2); border-radius: 6px;
-    font-family: "JetBrains Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     font-variant-numeric: tabular-nums;
     text-align: right; font-size: 13px;
     transition: border-color 0.15s, box-shadow 0.15s;
@@ -447,9 +512,31 @@
 
   /* ---------------- charge curve preview ---------------------------- */
   .curve-preview {
+    position: relative;
     width: 100%;
     padding: 4px 2px 0;
   }
+  .curve-preview .curve-empty {
+    display: none;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 2;
+    max-width: 22em;
+    margin: 0;
+    padding: 10px 16px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--ink-3);
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px dashed var(--line-2);
+    border-radius: 8px;
+    line-height: 1.45;
+  }
+  .curve-preview.is-empty .curve-empty { display: block; }
+  .curve-preview.is-empty svg { opacity: 0.2; }
+  .curve-preview.is-empty #curve-dot { display: none; }
   .curve-preview svg {
     width: 100%; height: auto;
     display: block;
@@ -474,7 +561,7 @@
     stroke-dasharray: 3 3;
   }
   .curve-preview .stage-label {
-    font-family: "Fraunces", Georgia, serif;
+    font-family: Georgia, "Times New Roman", serif;
     font-style: italic;
     font-size: 14px;
     font-weight: 500;
@@ -490,10 +577,10 @@
   .curve-preview .axis-tick {
     font-size: 10px;
     fill: var(--ink-3);
-    font-family: "JetBrains Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
   }
   .curve-preview .axis-title {
-    font-family: "Fraunces", Georgia, serif;
+    font-family: Georgia, "Times New Roman", serif;
     font-style: italic;
     font-size: 13px;
     font-weight: 500;
@@ -517,7 +604,7 @@
   .curve-preview .annotation-pill.i { stroke: var(--accent); }
   .curve-preview .annotation-pill.v { stroke: var(--ink); }
   .curve-preview .annotation-text {
-    font-family: "JetBrains Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     font-size: 11px;
     font-weight: 500;
     fill: var(--ink);
@@ -554,20 +641,20 @@
     font-weight: 600;
   }
   .info-cell .val {
-    font-family: "JetBrains Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     font-size: 14px;
     color: var(--ink);
     font-weight: 500;
   }
   .info-cell .val.empty {
-    font-family: "Fraunces", Georgia, serif;
+    font-family: Georgia, "Times New Roman", serif;
     font-style: italic;
     color: var(--ink-4);
     font-size: 13px;
     font-weight: 400;
   }
   .info-cell .val.serif {
-    font-family: "Fraunces", Georgia, serif;
+    font-family: Georgia, "Times New Roman", serif;
     font-style: normal;
     font-size: 18px;
     font-weight: 500;
@@ -588,14 +675,14 @@
     color: var(--accent-2);
     background: var(--accent-soft);
     padding: 2px 8px; border-radius: 4px;
-    font-family: "JetBrains Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     font-size: 11px;
     font-weight: 500;
   }
 
   /* ---------------- log ---------------- */
   #log {
-    font-family: "JetBrains Mono", monospace; font-size: 12px;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; font-size: 12px;
     background: var(--card-soft);
     border-radius: 8px;
     padding: 14px 18px;
@@ -616,12 +703,12 @@
   #log:empty::before {
     content: "no activity yet";
     color: var(--ink-4); font-style: italic;
-    font-family: "Fraunces", Georgia, serif;
+    font-family: Georgia, "Times New Roman", serif;
   }
 
   /* ---------------- connection chip latency ---------------- */
   .conn-lat {
-    font-family: "JetBrains Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     font-size: 11px;
     color: var(--ink-4);
     margin-left: 2px;
@@ -649,7 +736,7 @@
     padding-top: 12px;
   }
   details.raw-hex summary {
-    font-family: "Fraunces", Georgia, serif;
+    font-family: Georgia, "Times New Roman", serif;
     font-style: italic;
     font-size: 13px;
     color: var(--ink-3);
@@ -668,7 +755,7 @@
   }
   details.raw-hex[open] summary::before { transform: rotate(90deg); }
   details.raw-hex code {
-    font-family: "JetBrains Mono", monospace; font-size: 12px;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; font-size: 12px;
     color: var(--ink);
     background: var(--card-soft);
     padding: 1px 6px; border-radius: 3px;
@@ -680,14 +767,14 @@
   }
   .raw-hex-body label {
     font-size: 12px; color: var(--ink-3);
-    font-family: "Fraunces", Georgia, serif; font-style: italic;
+    font-family: Georgia, "Times New Roman", serif; font-style: italic;
   }
   .raw-hex-body input {
     width: 96px; padding: 6px 10px;
     background: var(--card);
     color: var(--ink);
     border: 1px solid var(--line-2); border-radius: 6px;
-    font-family: "JetBrains Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     font-variant-numeric: tabular-nums;
     text-align: right; font-size: 13px;
   }
@@ -703,7 +790,7 @@
     border-color: var(--danger); color: var(--danger); background: var(--danger-soft);
   }
   .raw-hex-body .meta {
-    font-family: "JetBrains Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     font-size: 11px;
     color: var(--ink-3);
     flex: 1;
@@ -718,7 +805,7 @@
   }
   .kbd-hint kbd {
     display: inline-block;
-    font-family: "JetBrains Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     font-size: 10px;
     padding: 1px 5px;
     background: var(--card-soft);
@@ -776,7 +863,7 @@
     padding: 26px 30px 22px;
   }
   .modal h3 {
-    font-family: "Fraunces", Georgia, serif;
+    font-family: Georgia, "Times New Roman", serif;
     font-weight: 500;
     font-size: 20px;
     letter-spacing: -0.01em;
@@ -803,14 +890,14 @@
   .diff-row .label { color: var(--ink-2); font-weight: 500; }
   .diff-row .label .name {
     display: block;
-    font-family: "JetBrains Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     font-size: 10px;
     color: var(--ink-4);
     margin-top: 2px;
     font-weight: 400;
   }
   .diff-row .val {
-    font-family: "JetBrains Mono", monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     font-variant-numeric: tabular-nums;
     font-size: 13px;
     color: var(--ink);
@@ -862,6 +949,13 @@
     .config-row { gap: 14px; }
     .config-row .check { font-size: 12px; }
     .modal { padding: 18px 18px 16px; max-height: 88vh; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #curve-dot { display: none; }
+    #curve-stages .stage-bg.active { opacity: 1; }
+    button.writing::after { animation: none; }
+    table.settings tr { transition: none; }
   }
 
   /* The curve preview's traveller dot uses a JS-driven rAF loop. */

@@ -203,8 +203,8 @@ def _security_headers(resp):
     resp.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "font-src 'self' https://fonts.gstatic.com data:; "
+        "style-src 'self' 'unsafe-inline'; "
+        "font-src 'self' data:; "
         "img-src 'self' data:; "
         "connect-src 'self'; "
         "object-src 'none'; "
@@ -236,6 +236,16 @@ def preview_page():
     return send_from_directory(_ROOT, "preview.html")
 
 
+@app.route("/api/health")
+def api_health():
+    """Lightweight probe for scripts / compose healthchecks."""
+    demo = bool(_bus_args and _bus_args.get("demo"))
+    connected = False
+    if _broadcaster is not None and _broadcaster._last_payload is not None:
+        connected = bool(_broadcaster._last_payload.get("connected"))
+    return jsonify({"ok": True, "demo": demo, "connected": connected})
+
+
 @app.route("/api/registers")
 def api_registers():
     """Static metadata for the UI to render its forms."""
@@ -253,6 +263,21 @@ def api_registers():
     })
 
 
+def _read_registers_paced(names: list[str]) -> dict:
+    """Read many registers with manual pacing and a short lock per read.
+
+    Sleeping *outside* the lock keeps SSE / Apply from blocking for the
+    whole batch (~25 ms × N between reads, not under _lock)."""
+    out = {}
+    for i, name in enumerate(names):
+        if i > 0:
+            time.sleep(MeanWellCharger.INTER_WRITE_DELAY_S)
+        with _lock:
+            raw, scaled = charger.read_register(name)
+        out[name] = {"raw": raw, "value": scaled}
+    return out
+
+
 @app.route("/api/read")
 @safe_can
 def api_read():
@@ -265,12 +290,7 @@ def api_read():
         return jsonify({"ok": False,
                         "error": f"unknown register(s): {', '.join(unknown)}",
                         "known": sorted(REGISTERS)}), 400
-    out = {}
-    with _lock:
-        for name in names:
-            raw, scaled = charger.read_register(name)
-            out[name] = {"raw": raw, "value": scaled}
-    return jsonify(out)
+    return jsonify(_read_registers_paced(names))
 
 
 @app.route("/api/status")
@@ -370,7 +390,7 @@ def api_operation():
 #
 # Win in three dimensions:
 #   * CPU / thread count: N browsers -> 1 polling thread instead of N
-#   * CAN traffic: 1 read per tick total, instead of N
+#   * CAN traffic: one paced poll tick (operation + status) shared, not N
 #   * Lock contention on _lock: 1 acquirer per tick, predictable cadence
 #
 # We also fold in:
@@ -443,6 +463,21 @@ class StateBroadcaster:
             try: self._subs.remove(q)
             except ValueError: pass
 
+    def _read_status_flags(self) -> dict:
+        """Fault / charge / system flag strings for the header (paced reads)."""
+        out = {}
+        for key, bits in (("fault_status",  FAULT_BITS),
+                          ("chg_status",    CHG_STATUS_BITS),
+                          ("system_status", SYSTEM_STATUS_BITS)):
+            time.sleep(MeanWellCharger.INTER_WRITE_DELAY_S)
+            try:
+                with _lock:
+                    raw, _ = charger.read_register(key)
+            except can.CanError:
+                raw = None
+            out[key] = _decode_bits(raw or 0, bits) if raw is not None else []
+        return out
+
     def _try_reconnect(self):
         """Rebuild the python-can Bus when the current one is wedged.
         Called from the poll loop after RECONNECT_THRESHOLD failures."""
@@ -487,16 +522,19 @@ class StateBroadcaster:
                     "fail_streak": self._fail_streak,
                     "ts":          time.time(),
                 }
-            # Success — reset both streaks.
+            # Success — reset both streaks; fold status into the same tick
+            # so the header pills stay fresh without a separate 30 s poll.
             self._fail_streak = 0
             self._err_streak  = 0
-            return {
+            payload = {
                 "connected":   True,
                 "operation":   raw,
                 "latency_ms":  round(latency_ms, 1),
                 "fail_streak": 0,
                 "ts":          time.time(),
             }
+            payload.update(self._read_status_flags())
+            return payload
         except can.CanError as e:
             self._err_streak  += 1
             self._fail_streak += 1
