@@ -169,16 +169,47 @@ class TestWriteManyCyclePreservation:
         assert mw.read_register("curve_cc")[1] == pytest.approx(18.0, rel=1e-3)
         assert mw.read_register("curve_tc")[1] == pytest.approx(4.0,  rel=1e-3)
 
-    def test_output_stays_off_if_off_before_apply(self):
-        """The safety property: a user with the output OFF must not have it
-        silently re-energised when they save settings."""
+    def test_output_returns_to_off_after_commit_pulse(self):
+        """Output that was OFF before Apply must end OFF afterwards.  The
+        intermediate ON pulse is required by the firmware to latch new
+        B0..B9 values for read-back, but the user's prior state is
+        restored — a connected battery does NOT see a sustained charge
+        current after a settings tweak."""
         mw = _make_charger()
         mw.set_off()
         was_on = mw.write_many([("curve_cv", 53.6)])
         assert was_on is False
         raw, _ = mw.read_register("operation")
-        assert raw == 0, "output must remain OFF after writes"
+        assert raw == 0, "output must end OFF (pre-Apply state preserved)"
         assert mw.read_register("curve_cv")[1] == pytest.approx(53.6, rel=1e-3)
+
+    def test_write_many_pulses_on_before_returning_to_off(self):
+        """Even when was_on=False, write_many must transition the output
+        OFF→ON at least once so the firmware commits B0..B9 to the
+        read-back register.  Regression guard: dropping that pulse
+        (the previous behaviour) made bits like CVTSSE silently vanish
+        on the next reload."""
+        bus = FakeBus()
+        # Manual operation transition log: every (code=0x00) send records
+        # whatever ON/OFF byte was written.  Lets us verify the firmware
+        # saw at least one OFF→ON edge during write_many(cycle=True).
+        op_writes: list[int] = []
+        real_send = bus.send
+        def _spy_send(msg):
+            data = list(msg.data)
+            if data and data[0] == 0x00 and len(data) >= 3:
+                op_writes.append(data[2])
+            return real_send(msg)
+        bus.send = _spy_send
+
+        mw = MeanWellCharger(can_id=0xC0103, bus=bus, recv_timeout=0.05)
+        mw.set_off()
+        op_writes.clear()
+        mw.write_many([("curve_cv", 54.0)])
+        # At minimum we must have seen ON appear after the writes (the
+        # OFF→ON edge that latches the firmware), then OFF restore.
+        assert 1 in op_writes, "write_many must pulse the output ON to commit"
+        assert op_writes[-1] == 0, "write_many must end with OFF when was_on=False"
 
     def test_cycle_skipped_entirely_when_cycle_false(self):
         mw = _make_charger()

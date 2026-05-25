@@ -352,15 +352,28 @@ class MeanWellCharger:
     def write_many(self, settings, cycle=True):
         """Write a list of (name, value) settings.
 
-        B0..B9 only commit while the remote output is OFF (manual §6.5), so
-        we briefly cycle OFF/ON around the writes.  The original output
-        state is *preserved*: if the user had the output OFF before Apply,
-        we leave it OFF afterwards instead of silently energising the
-        charger.  This is a real safety property — a connected battery
-        suddenly seeing charge current is not OK.
+        B0..B9 only commit while the remote output is OFF (manual §6.5),
+        AND empirically the firmware needs an OFF→ON transition to latch
+        new values for read-back — without that transition some bits
+        (notably CVTSSE / "Enter float after CV") get written to RAM but
+        don't appear on subsequent reads.  We therefore always issue the
+        OFF→ON pulse, then restore the user's prior output state:
 
-        Returns the original operation state (0/1) so callers can surface
-        the cycle in the UI (or skip it entirely on a read-only preview).
+          * was_on=True:  set_off → writes → set_on
+                          (preserves the energised state)
+          * was_on=False: writes → set_on → set_off
+                          (brief pulse so the firmware commits, then
+                           returns to OFF as the user had it)
+
+        Either way the output ends in the user's pre-Apply state.  The
+        brief ON pulse for was_on=False is the minimum needed to make
+        the firmware accept the new B0..B9 values; callers who must
+        avoid energising the output at all (e.g. battery disconnected
+        during commissioning) should pass cycle=False and arrange remote
+        OFF some other way before applying.
+
+        Returns the original operation state (0/1) so callers can
+        surface the cycle in the UI confirmation modal.
         """
         for name, value in settings:
             reg = REGISTERS[name]
@@ -388,12 +401,16 @@ class MeanWellCharger:
                 self.write_register(name, value)
                 time.sleep(self.INTER_WRITE_DELAY_S)
         finally:
-            # Only re-energise if the user already had it on.  If the
-            # output was off (or we couldn't determine state), leave it
-            # off — the writes still commit because B0..B9 don't need
-            # the output to be on, only "not on while writing".
-            if cycle and was_on:
+            if cycle:
+                # Pulse ON so the firmware latches the new B0..B9 values
+                # into its operational + read-back registers.  Then, if
+                # the user had the output OFF before Apply, return to OFF
+                # so we don't leave a connected battery seeing charge
+                # current after a settings tweak.
                 self.set_on()
+                if not was_on:
+                    time.sleep(self.INTER_WRITE_DELAY_S)
+                    self.set_off()
         return was_on
 
     def set_restart_voltage(self, v):

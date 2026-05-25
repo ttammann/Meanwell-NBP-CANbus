@@ -1574,17 +1574,22 @@ function _buildDiffBody(container, diff) {
 function _setModalWarn(isOn) {
   const warn = document.getElementById('diff-warn');
   warn.replaceChildren();
+  const strong = document.createElement('strong');
+  strong.textContent = 'Heads up:';
+  warn.appendChild(strong);
   if (isOn) {
-    const strong = document.createElement('strong');
-    strong.textContent = 'Heads up:';
-    warn.appendChild(strong);
     warn.appendChild(document.createTextNode(
       ' the output is currently ON. Applying will briefly switch the charger OFF, '
       + 'write all changes, then switch it back ON — a connected battery will see '
       + 'charge current drop and resume.'));
   } else {
-    warn.textContent = 'Output is currently OFF; settings will be written directly '
-      + 'without a power cycle.';
+    // The Mean Well firmware needs an OFF→ON transition for B0..B9 changes
+    // (notably CVTSSE / "Enter float after CV") to latch into the
+    // read-back register.  We always do the pulse, then return to OFF.
+    warn.appendChild(document.createTextNode(
+      ' the output is currently OFF. Applying will write the new settings, '
+      + 'briefly pulse the output ON to commit them, then return to OFF. '
+      + 'Disconnect the battery first if a momentary energise is not safe.'));
   }
 }
 
@@ -1659,8 +1664,8 @@ async function applyChanges(settings) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ settings })
     });
-    if (r.cycled) log('write OK (output cycled OFF→ON)', 'ok');
-    else          log('write OK (output stayed off)', 'ok');
+    if (r.was_on) log('write OK (output cycled OFF→ON, ended ON)', 'ok');
+    else          log('write OK (output pulsed ON to commit, ended OFF)', 'ok');
     // Flag any value that landed different from what we requested (clamp
     // / rounding by the firmware).  Helpful when, say, you ask for
     // curve_cv=58.5 V on a hard-clamped firmware.

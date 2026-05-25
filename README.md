@@ -507,10 +507,16 @@ scenario it's designed for.
   rejected at the API layer.  (The NFC-app section on page 37 says 1–6000
   minutes; that's a documentation contradiction — the CANBus table is
   authoritative for CAN-driven writes.)
-- **EEPROM commit timing**: B0–B9 only take effect when the output is OFF
-  (master switch off or remote-OFF input pulled low).  `write_many()` and
-  the web UI's "Apply changes" wrap every batch in OFF / write / ON for
-  this reason.
+- **EEPROM commit timing**: B0–B9 only take effect when the output is
+  OFF (master switch off or remote-OFF input pulled low), **and** the
+  firmware needs an OFF→ON transition before the new values appear on
+  read-back — without the transition some bits (notably CVTSSE / "Enter
+  float after CV") get written to RAM but vanish on the next read.
+  `write_many()` and the web UI's **Apply changes** therefore always
+  wrap every batch in OFF / write / ON, then restore the user's prior
+  output state (so an Apply that started with output OFF ends with
+  output OFF, after a brief commit pulse).  Pass `--no-cycle` to the CLI
+  if you've already arranged remote OFF some other way.
 
 ## Notes from the field
 
