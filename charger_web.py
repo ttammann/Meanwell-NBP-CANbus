@@ -37,6 +37,10 @@ log = logging.getLogger("npb")
 
 # Flask discovers ./templates and ./static next to this module by default.
 app = Flask(__name__)
+# Don't let the browser hold onto our static JS/CSS for half a day — short
+# cache means deploys take effect on the user's next refresh.  SSE has its
+# own no-cache header (set on the response) which still wins.
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 _lock = threading.Lock()
 charger: MeanWellCharger | None = None  # set in main()
 
@@ -45,8 +49,11 @@ charger: MeanWellCharger | None = None  # set in main()
 _bus_args: dict | None = None
 
 # Identity strings (MFR_*) rarely change — cache them.  VIN/temp are live.
+# `_device_identity_lock` is a single-flight gate so two concurrent
+# /api/device_info requests during a cache miss don't both hit the bus.
 _device_identity_cache: dict | None = None
 _device_identity_cache_at: float = 0.0
+_device_identity_lock = threading.Lock()
 DEVICE_IDENTITY_CACHE_S = 55.0
 
 
@@ -60,15 +67,26 @@ def _invalidate_device_info_cache() -> None:
 
 
 def _cached_device_identity() -> dict:
+    """Return cached identity strings, refreshing at most once per
+    ``DEVICE_IDENTITY_CACHE_S``.  Multiple concurrent cache misses
+    serialize through ``_device_identity_lock`` — only one CAN read,
+    every other caller gets the freshly-cached copy."""
     global _device_identity_cache, _device_identity_cache_at
     now = time.monotonic()
     if (_device_identity_cache is not None
             and (now - _device_identity_cache_at) < DEVICE_IDENTITY_CACHE_S):
         return dict(_device_identity_cache)
-    data = charger.device_identity(read_hook=_device_info_read_hook())
-    _device_identity_cache = data
-    _device_identity_cache_at = now
-    return dict(data)
+    with _device_identity_lock:
+        # Re-check inside the lock so a second waiter doesn't redundantly
+        # re-read the bus right after the first one filled the cache.
+        now = time.monotonic()
+        if (_device_identity_cache is not None
+                and (now - _device_identity_cache_at) < DEVICE_IDENTITY_CACHE_S):
+            return dict(_device_identity_cache)
+        data = charger.device_identity(read_hook=_device_info_read_hook())
+        _device_identity_cache = data
+        _device_identity_cache_at = now
+        return dict(data)
 
 
 def _read_live_device_telemetry() -> dict:
@@ -248,14 +266,12 @@ def safe_can(fn):
 
 @app.after_request
 def _security_headers(resp):
-    """Conservative defaults for a LAN tool.  Google Fonts is allow-listed
-    because the UI uses Fraunces / Inter / JetBrains Mono from it; if you
-    self-host the fonts you can tighten this further."""
-    # SSE responses are stream-style; setting these is harmless but the
-    # Cache-Control we already set on /api/stream takes precedence.
+    """Conservative defaults for a LAN tool.  All assets self-hosted;
+    no third-party fonts or scripts are loaded."""
     resp.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
+        "script-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
         "font-src 'self' data:; "
         "img-src 'self' data:; "
@@ -267,6 +283,12 @@ def _security_headers(resp):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "no-referrer")
     resp.headers.setdefault("X-Frame-Options", "DENY")
+    # JSON API responses must not be cached — stale settings or operation
+    # state would mislead the UI.  /api/stream sets its own Cache-Control;
+    # static assets are governed by SEND_FILE_MAX_AGE_DEFAULT (set to 0).
+    if (resp.mimetype == "application/json"
+            and "Cache-Control" not in resp.headers):
+        resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
@@ -349,20 +371,24 @@ def api_read():
 @app.route("/api/status")
 @safe_can
 def api_status():
+    """Decoded status / config bitfields.  Reads are paced (>=20 ms
+    between requests per manual §6.1) and the lock is released between
+    them so SSE / Apply are not blocked for the whole batch."""
+    bit_keys     = ["fault_status", "chg_status", "system_status"]
+    decoder_keys = ["curve_config", "system_config"]
+    raws = _read_registers_paced(bit_keys + decoder_keys)
     out = {}
     for key, bits in (("fault_status",  FAULT_BITS),
                       ("chg_status",    CHG_STATUS_BITS),
                       ("system_status", SYSTEM_STATUS_BITS)):
-        with _lock:
-            raw, _ = charger.read_register(key)
+        raw = raws[key]["raw"]
         out[key] = {
             "raw":   raw,
             "flags": _decode_bits(raw or 0, bits) if raw is not None else [],
         }
     for key, decoder in (("curve_config",  _decode_curve_config),
                          ("system_config", _decode_system_config)):
-        with _lock:
-            raw, _ = charger.read_register(key)
+        raw = raws[key]["raw"]
         out[key] = {
             "raw":     raw,
             "decoded": decoder(raw) if raw is not None else None,
@@ -394,20 +420,31 @@ def api_write():
     })
 
 
+def _toggle_with_readback(on: bool) -> dict:
+    """Write the operation register, pace, then read it back so the
+    response is authoritative — callers don't have to wait up to one SSE
+    tick (~3 s) for the chip / modal warning to reflect the new state."""
+    with _lock:
+        if on:
+            charger.set_on()
+        else:
+            charger.set_off()
+    time.sleep(MeanWellCharger.INTER_WRITE_DELAY_S)
+    with _lock:
+        raw, _ = charger.read_register("operation")
+    return {"ok": True, "operation": raw, "on": raw == 1}
+
+
 @app.route("/api/on", methods=["POST"])
 @safe_can
 def api_on():
-    with _lock:
-        charger.set_on()
-    return jsonify({"ok": True})
+    return jsonify(_toggle_with_readback(True))
 
 
 @app.route("/api/off", methods=["POST"])
 @safe_can
 def api_off():
-    with _lock:
-        charger.set_off()
-    return jsonify({"ok": True})
+    return jsonify(_toggle_with_readback(False))
 
 
 @app.route("/api/device_info")
@@ -607,7 +644,13 @@ class StateBroadcaster:
             }
 
     def _fanout(self, payload: dict) -> None:
-        """Push latest state to every subscriber (queue depth 1)."""
+        """Push latest state to every subscriber (queue depth 1).
+
+        Drops any subscriber whose queue still rejects after a get / put
+        (should never happen under the GIL, but handled defensively).
+        We collect dropouts in a separate list and prune *after* the loop
+        — never mutate ``self._subs`` while iterating it."""
+        dropped: list[queue.Queue] = []
         with self._subs_lock:
             for q in self._subs:
                 if q.full():
@@ -618,10 +661,12 @@ class StateBroadcaster:
                 try:
                     q.put_nowait(payload)
                 except queue.Full:
-                    try:
-                        self._subs.remove(q)
-                    except ValueError:
-                        pass
+                    dropped.append(q)
+            for q in dropped:
+                try:
+                    self._subs.remove(q)
+                except ValueError:
+                    pass
 
     def _run(self):
         while not self._stop.is_set():

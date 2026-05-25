@@ -130,7 +130,8 @@
         <span>Restart when V drops below</span>
       </label>
       <span class="restart-group disabled" id="restart-group">
-        <input class="num" type="number" id="cfg-restart-v" step="0.1" min="0" max="58.4" disabled>
+        <input class="num" type="number" id="cfg-restart-v" step="0.1" min="0" max="58.4"
+               autocomplete="off" spellcheck="false" inputmode="decimal" disabled>
         <span class="unit">V</span>
       </span>
     </div>
@@ -174,6 +175,21 @@
       <div class="modal-actions">
         <button id="diff-cancel">Cancel</button>
         <button class="primary" id="diff-confirm">Apply now</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic confirm modal — used by the output toggle (replaces the
+       jarring native confirm() dialog).  customConfirm() in main.js
+       fills #confirm-title / #confirm-body and resolves a promise with
+       true/false. -->
+  <div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" hidden>
+    <div class="modal modal-narrow">
+      <h3 id="confirm-title"></h3>
+      <p id="confirm-body" class="confirm-body"></p>
+      <div class="modal-actions">
+        <button id="confirm-cancel">Cancel</button>
+        <button class="primary" id="confirm-ok">Confirm</button>
       </div>
     </div>
   </div>

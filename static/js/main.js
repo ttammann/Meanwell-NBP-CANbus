@@ -297,7 +297,8 @@ function buildSettingsTable() {
       : `<td class="toe-cell"></td>`;
     row.innerHTML = `
       <td class="desc">${reg.desc}<span class="name">${name}</span></td>
-      <td><input type="${inputType}" data-name="${name}" step="${step}" ${minMax}></td>
+      <td><input type="${inputType}" data-name="${name}" step="${step}" ${minMax}
+                 autocomplete="off" spellcheck="false" inputmode="${isHex ? 'text' : 'decimal'}"></td>
       <td class="unit-cell">${reg.unit || ''}</td>
       <td class="range-cell">${rangeText}</td>
       ${toeCell}
@@ -1018,6 +1019,8 @@ function tickCurveDot(now) {
 let stream = null;
 let streamStallTimer = null;
 let lastSseOperation = null;
+let _onerrorBannerTimer = null;
+let _registersLoaded = false;
 
 function markStreamStall() {
   // No 'state' or comment received for >2x heartbeat interval — treat as
@@ -1025,6 +1028,13 @@ function markStreamStall() {
   setConn('err', 'no response');
   updateOnoffHint(false);
   handleCanDisconnected();
+}
+
+function _cancelOnerrorBannerTimer() {
+  if (_onerrorBannerTimer) {
+    clearTimeout(_onerrorBannerTimer);
+    _onerrorBannerTimer = null;
+  }
 }
 
 function startStream() {
@@ -1039,6 +1049,9 @@ function startStream() {
 
   stream.addEventListener('state', (e) => {
     resetWatchdog();
+    // Any state event means the EventSource is alive — squash a queued
+    // `onerror` banner before it flips the UI.
+    _cancelOnerrorBannerTimer();
     let data;
     try { data = JSON.parse(e.data); } catch { return; }
     applyDemoModeFromSse(data);
@@ -1062,20 +1075,31 @@ function startStream() {
         updateOnoffHint(true);
       }
     }
+    // If /api/registers failed at boot, retry as soon as the bus is up.
+    if (!_registersLoaded) void ensureRegistersLoaded();
     if (isDemoMode) void ensureDemoSettingsLoaded();
   });
 
   // `: ping` comments keep the TCP stream warm; the browser does not
   // dispatch a JS event for them.  The watchdog resets on every `state`
   // event — if those stop (charger silent / server hung), we show no response.
-  stream.addEventListener('open', resetWatchdog);
+  stream.addEventListener('open', () => {
+    resetWatchdog();
+    _cancelOnerrorBannerTimer();
+  });
 
   stream.onerror = () => {
-    // Browser will auto-reconnect (default retry = 3s).  Show the
-    // disconnect state immediately so the chip is honest.
+    // Debounce: EventSource auto-reconnects every ~3s on transient drops
+    // (server restart, dev reload).  Wait 1.5s before showing the
+    // "settings stale" banner — if a new `state` arrives in that window
+    // we cancel the timer and the UI never flickers.
     setConn('err', 'no response');
     updateOnoffHint(false);
-    handleCanDisconnected();
+    if (_onerrorBannerTimer) return;
+    _onerrorBannerTimer = setTimeout(() => {
+      _onerrorBannerTimer = null;
+      handleCanDisconnected();
+    }, 1500);
   };
 
   resetWatchdog();
@@ -1212,6 +1236,31 @@ async function loadRegisters() {
   // "Reload from charger" to populate values.
   registers = await fetchJSON('/api/registers');
   buildSettingsTable();
+  _registersLoaded = true;
+  drawCurvePreview();
+  refreshRawHexFromState();
+  updateDirtyCount();
+}
+
+let _ensureRegistersInFlight = false;
+
+/**
+ * Idempotent retry for `/api/registers` when the initial bootApp call
+ * failed (e.g. CAN was down at startup).  Called from the SSE state
+ * handler so the form populates as soon as the bus comes up — no full
+ * page reload required.
+ */
+async function ensureRegistersLoaded() {
+  if (_registersLoaded || _ensureRegistersInFlight) return;
+  _ensureRegistersInFlight = true;
+  try {
+    await loadRegisters();
+    log('register metadata loaded', 'ok');
+  } catch (e) {
+    // stay quiet — next SSE state will retry again
+  } finally {
+    _ensureRegistersInFlight = false;
+  }
 }
 
 async function reloadFromCharger() {
@@ -1550,14 +1599,24 @@ async function openDiffModal() {
 
   _buildDiffBody(document.getElementById('diff-body'), diff);
 
+  // The modal warning ("output is currently ON / OFF") must reflect
+  // *current* state.  If the user toggled the output within the last SSE
+  // cadence (~3 s) the cached `lastSseOperation` may be stale, so we
+  // refetch.  Otherwise the cached value is fine and saves a CAN read.
   let isOn = false;
-  if (typeof lastSseOperation === 'number') {
+  const togglesAreFresh = (Date.now() - userToggling) < 3500;
+  const haveSseValue = typeof lastSseOperation === 'number';
+  if (haveSseValue && !togglesAreFresh) {
     isOn = lastSseOperation === 1;
   } else {
     try {
       const r = await fetchJSON('/api/operation');
       isOn = !!r.on;
-    } catch { /* keep isOn=false */ }
+      lastSseOperation = r.operation;
+    } catch {
+      // Bus is unreachable; fall back to whatever SSE last told us.
+      if (haveSseValue) isOn = lastSseOperation === 1;
+    }
   }
   _setModalWarn(isOn);
 
@@ -1774,19 +1833,77 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ---------- generic confirm modal (shared by output toggle) ---------------
+//
+// Replaces native confirm() so the toggle confirmation matches the rest
+// of the UI (focus trap, Esc to close, dark backdrop).  Returns a
+// Promise<boolean>.
+
+function customConfirm({ title, body, confirmText, danger }) {
+  return new Promise((resolve) => {
+    const modal       = document.getElementById('confirm-modal');
+    const titleEl     = document.getElementById('confirm-title');
+    const bodyEl      = document.getElementById('confirm-body');
+    const cancelBtn   = document.getElementById('confirm-cancel');
+    const okBtn       = document.getElementById('confirm-ok');
+    const prevFocus   = document.activeElement;
+
+    titleEl.textContent = title;
+    bodyEl.textContent  = body;
+    okBtn.textContent   = confirmText || 'Confirm';
+    okBtn.classList.toggle('danger', !!danger);
+    okBtn.classList.toggle('primary', !danger);
+    modal.hidden = false;
+    cancelBtn.focus();
+
+    const cleanup = (result) => {
+      modal.hidden = true;
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onBackdrop);
+      document.removeEventListener('keydown', onKey);
+      okBtn.classList.remove('danger');
+      if (prevFocus && typeof prevFocus.focus === 'function') prevFocus.focus();
+      resolve(result);
+    };
+    const onOk      = () => cleanup(true);
+    const onCancel  = () => cleanup(false);
+    const onBackdrop = (e) => { if (e.target === modal) cleanup(false); };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); cleanup(false); }
+      if (e.key === 'Enter' && document.activeElement !== cancelBtn) {
+        e.preventDefault(); cleanup(true);
+      }
+    };
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    modal.addEventListener('click', onBackdrop);
+    document.addEventListener('keydown', onKey);
+  });
+}
+
 document.getElementById('onoff').addEventListener('change', async (e) => {
   const target = e.target.checked;
-  const msg = target
-    ? 'Turn charger OUTPUT ON?\n\nA connected battery may begin charging.'
-    : 'Turn charger OUTPUT OFF?\n\nCharge current will stop.';
-  if (!confirm(msg)) {
+  const ok = await customConfirm({
+    title: target ? 'Turn output ON?' : 'Turn output OFF?',
+    body: target
+      ? 'A connected battery may begin charging immediately.'
+      : 'Charge current will stop and the output will be de-energised.',
+    confirmText: target ? 'Turn ON' : 'Turn OFF',
+    danger: target,
+  });
+  if (!ok) {
     e.target.checked = !target;
     return;
   }
   userToggling = Date.now();
   e.target.disabled = true;
   try {
-    await fetchJSON(target ? '/api/on' : '/api/off', { method: 'POST' });
+    const r = await fetchJSON(target ? '/api/on' : '/api/off',
+                              { method: 'POST' });
+    // Trust the server's read-back for our local cached state, so the
+    // Apply-modal warning is correct even if SSE hasn't ticked yet.
+    if (typeof r.operation === 'number') lastSseOperation = r.operation;
     log('output ' + (target ? 'ON' : 'OFF'), 'ok');
   } catch (err) {
     log('toggle failed: ' + err.message, 'err');
@@ -1796,22 +1913,34 @@ document.getElementById('onoff').addEventListener('change', async (e) => {
   }
 });
 
-// Boot sequence: restore persisted log, detect demo vs real CAN, load
-// register metadata, then SSE / device-info polls.
+// Boot sequence: restore persisted log, kick off health + registers in
+// parallel (don't block the UI on a slow CAN bus), then start SSE.  The
+// SSE handler also retries `/api/registers` automatically if it failed
+// here, so a transient bus down at boot recovers without a page reload.
 async function bootApp() {
   _loadPersistedLog();
-  applyDemoModeFromHealth(await fetchHealthWithRetry());
-  try {
-    await loadRegisters();
-    drawCurvePreview();
-    refreshRawHexFromState();
-    updateDirtyCount();
-  } catch (e) {
-    log('register load failed: ' + e.message, 'err');
-  }
+  // Health and registers are independent — racing them shaves up to ~1.5 s
+  // off first paint when the network is slow.  applyDemoModeFromSse covers
+  // the case where /api/health is still in flight when SSE arrives first.
+  const healthP = fetchHealthWithRetry()
+    .then(applyDemoModeFromHealth)
+    .catch(() => {});
+  const registersP = loadRegisters().catch(e => {
+    log('register load failed: ' + e.message + ' — will retry on connect', 'warn');
+  });
+  // Don't block the UI on identity strings; refresh in the background.
+  void healthP;
+  void registersP;
+  await Promise.allSettled([healthP, registersP]);
   refreshDeviceInfo();
   startStream();
   requestAnimationFrame((t) => { lastFrame = t; tickCurveDot(t); });
-  setInterval(refreshDeviceInfo, 60000);
+  // Pause the device-info refresh when the tab is hidden — saves CAN
+  // cycles when the operator has the page in a background tab.
+  setInterval(() => {
+    if (document.visibilityState === 'visible' && sseWasConnected) {
+      refreshDeviceInfo();
+    }
+  }, 60000);
 }
 bootApp();

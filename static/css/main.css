@@ -156,17 +156,29 @@
 
   /* ---------------- buttons ---------------- */
   button {
-    font: 500 13px/1 "Inter", sans-serif;
+    font: 500 13px/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     cursor: pointer; padding: 10px 18px;
     background: var(--card);
     color: var(--ink);
     border: 1px solid var(--line-2);
     border-radius: 8px;
-    transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+    transition: border-color 0.15s ease, background 0.15s ease,
+                color 0.15s ease, transform 0.08s ease, box-shadow 0.12s ease;
   }
   button:hover:not(:disabled) {
     border-color: var(--accent);
     color: var(--accent);
+  }
+  /* Visual press cue — buttons depress + darken on click / Enter / Space.
+     Kept intentionally subtle (1 px translate, ~1.5 % scale) so it reads as
+     tactile without becoming distracting on rapid keyboard apply. */
+  button:active:not(:disabled) {
+    transform: translateY(1px) scale(0.985);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent-2);
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+    transition-duration: 0s;
   }
   button.primary {
     background: var(--accent); color: white; border: 1px solid var(--accent);
@@ -174,7 +186,21 @@
   button.primary:hover:not(:disabled) {
     background: var(--accent-2); border-color: var(--accent-2); color: white;
   }
+  button.primary:active:not(:disabled) {
+    background: #1e293b;
+    border-color: #1e293b;
+    color: white;
+    box-shadow: inset 0 2px 4px rgba(15, 23, 42, 0.25);
+  }
   button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-soft);
+    border-color: var(--accent);
+  }
+  /* When a button is in the writing-spinner state, suppress the active
+     transform so the spinner doesn't visibly jump while we're posting. */
+  button.writing:active { transform: none; }
 
   /* master switch */
   .master {
@@ -260,6 +286,12 @@
     color: var(--ink);
     border-color: var(--accent);
     background: var(--card-soft);
+  }
+  .panel h2 .btn-inline:active {
+    transform: scale(0.94);
+    background: var(--accent-soft);
+    color: var(--accent-2);
+    transition-duration: 0s;
   }
   .sr-only {
     position: absolute;
@@ -502,11 +534,13 @@
   .check input:focus-visible + .box {
     box-shadow: 0 0 0 3px var(--accent-soft);
   }
+  /* Press cue on the checkbox box itself (the input is visually hidden). */
+  .check:active .box { transform: scale(0.9); transition: transform 0.08s ease; }
   .check.changed .box { border-color: var(--warn); background: var(--warn-soft); }
   .check.changed input:checked + .box { background: var(--warn); border-color: var(--warn); }
   .check .hint {
     color: var(--ink-4); font-size: 11px;
-    font-style: italic; font-family: "Fraunces", serif;
+    font-style: italic; font-family: Georgia, "Times New Roman", serif;
     margin-left: 2px;
     font-weight: 400;
   }
@@ -573,7 +607,7 @@
   .curve-preview svg {
     width: 100%; height: auto;
     display: block;
-    font-family: "Inter", sans-serif;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
   /* Curve palette: voltage = ink (dark slate), current = accent.
      Stage backdrops are alternating warm-grey shades so the eye can still
@@ -754,13 +788,14 @@
     width: 16px; height: 16px;
     border-radius: 50%;
     background: var(--ink-4); color: white;
-    font-family: "Inter", sans-serif;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     font-size: 10px; font-weight: 600;
     cursor: help;
     margin-left: 8px;
     transition: background 0.15s;
   }
   .help-tip:hover, .help-tip:focus { background: var(--accent); outline: none; }
+  .help-tip:active { background: var(--accent-2); transform: scale(0.9); }
 
   /* ---------------- raw curve_config hex (power-user details) ---------- */
   details.raw-hex {
@@ -954,6 +989,27 @@
   .modal-actions {
     display: flex; justify-content: flex-end; gap: 10px;
   }
+  /* Danger variant — used by the output-toggle confirm modal so "Turn ON"
+     visually communicates "this energises the output". */
+  button.danger {
+    background: var(--danger); color: white; border: 1px solid var(--danger);
+  }
+  button.danger:hover:not(:disabled) {
+    background: #7f1d1d; border-color: #7f1d1d; color: white;
+  }
+  button.danger:active:not(:disabled) {
+    background: #6b1818; border-color: #6b1818;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.25);
+  }
+  /* Narrow modal for simple confirm prompts (output toggle) — visually
+     distinct from the wider Apply diff modal. */
+  .modal.modal-narrow { max-width: 420px; }
+  .modal .confirm-body {
+    margin: 0 0 18px;
+    color: var(--ink-2);
+    font-size: 13px;
+    line-height: 1.5;
+  }
 
   /* ---------------- mobile responsiveness ---------------- */
   @media (max-width: 720px) {
@@ -989,6 +1045,12 @@
     #curve-stages .stage-bg.active { opacity: 1; }
     button.writing::after { animation: none; }
     table.settings tr { transition: none; }
+    /* Keep the colour-shift press cue but drop the transform — users with
+       reduced-motion still get a visible "I clicked it" without movement. */
+    button:active:not(:disabled),
+    .panel h2 .btn-inline:active,
+    .help-tip:active,
+    .check:active .box { transform: none; }
   }
 
   /* The curve preview's traveller dot uses a JS-driven rAF loop. */

@@ -73,6 +73,34 @@ class TestRequestResponseFraming:
         with pytest.raises(KeyError):
             mw.read_register("totally_made_up")
 
+    def test_request_total_wait_is_bounded_by_recv_timeout(self):
+        """A misbehaving bus that returns wrong-coded frames must not hold
+        _lock for ``N × recv_timeout``; the loop is bounded by a single
+        deadline.  Previously a 5-skip × 0.5 s timeout could block for
+        2.5 s per request."""
+        class _WrongCodeBus(FakeBus):
+            """recv() returns a frame echoing the wrong command code so
+            the _request loop never matches."""
+            def recv(self, timeout=None):
+                if self._last_request is None:
+                    return None
+                # Return a frame echoing 0xFF (a code we'll never request).
+                self._last_request = None
+                payload = [0xFF, 0xFF, 0, 0, 0, 0, 0, 0]
+                return can.Message(arbitration_id=0xC0103,
+                                   data=payload, is_extended_id=True)
+
+        mw = MeanWellCharger(can_id=0xC0103, bus=_WrongCodeBus(),
+                             recv_timeout=0.2)
+        t0 = time.monotonic()
+        raw, _ = mw.read_register("operation")
+        elapsed = time.monotonic() - t0
+        assert raw is None
+        # Allow plenty of headroom for slow CI; the point is "well under
+        # 5 × recv_timeout = 1.0 s".  The wrong-coded frames return
+        # immediately so this should be near-instant on a healthy box.
+        assert elapsed < 0.6, f"_request took {elapsed:.2f}s (bound was 0.2s)"
+
     def test_request_drains_stale_frames(self):
         """A stale frame already in the rx buffer should not be mistaken
         for the response to our next request — the framing protocol

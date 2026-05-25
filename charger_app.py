@@ -185,7 +185,12 @@ class MeanWellCharger:
 
         Per manual §6.1, the protocol requires a matching command echo in
         the response.  We validate it here to avoid mis-attributing a stale
-        or out-of-order frame to the wrong register read."""
+        or out-of-order frame to the wrong register read.
+
+        Total wait is bounded by ``self._timeout`` (a single deadline),
+        not ``N × self._timeout`` per skipped frame.  A misbehaving bus
+        that floods us with the wrong-coded frames cannot hold _lock for
+        more than ``recv_timeout`` per call."""
         # Drain up to a few stale frames that may be sitting in the
         # receive buffer (unsolicited frames, or leftovers from a previous
         # request that timed out).  Bounded so a misbehaving bus can't
@@ -205,16 +210,22 @@ class MeanWellCharger:
             data=[code & 0xFF, (code >> 8) & 0xFF],
             is_extended_id=True,
         ))
-        deadline_skips = 5
-        while deadline_skips > 0:
-            resp = self._bus.recv(self._timeout)
+        deadline = time.monotonic() + self._timeout
+        # Belt + braces sanity bound on iterations even if the bus is
+        # spamming wrong-coded frames faster than `time.monotonic()` ticks.
+        attempts = 16
+        while attempts > 0:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            resp = self._bus.recv(remaining)
             if not resp or len(resp.data) < 2:
                 return None
             if resp.data[0] == (code & 0xFF) and resp.data[1] == ((code >> 8) & 0xFF):
                 if len(resp.data) < 3:
                     return None
                 return list(resp.data[2:])
-            deadline_skips -= 1
+            attempts -= 1
         return None
 
     # --- generic register access -----------------------------------------

@@ -21,6 +21,14 @@ services:
       NPB_LOG_FILE: ${NPB_LOG_FILE:-/tmp/npb-charger.log}
     command: ["python", "charger_web.py", "--demo", "--host", "0.0.0.0", "--port", "8080"]
     restart: unless-stopped
+    # /api/health is intentionally cheap (no CAN reads) — using urllib so we
+    # don't depend on curl/wget being in the slim image.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     profiles: ["demo"]
 
   charger:
@@ -46,6 +54,12 @@ services:
         --host    0.0.0.0
         --port    ${NPB_PORT:-8080}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${NPB_PORT:-8080}/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     profiles: ["charger"]
 
   # USB-CAN on Linux: pass the host tty through (not supported on Docker Desktop for Mac).
@@ -67,4 +81,10 @@ services:
         --host     0.0.0.0
         --port     8080
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     profiles: ["usb-can"]

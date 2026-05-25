@@ -122,6 +122,10 @@ python3 charger_web.py
 # → http://localhost:8080
 ```
 
+A more detailed Ubuntu walk-through (systemd unit, `can-utils` smoke
+test, common `ip link` gotchas) lives in
+[`docs/ubuntu-setup.md`](docs/ubuntu-setup.md).
+
 ## Docker
 
 Three compose profiles; **only `demo` works on macOS / Windows**.
