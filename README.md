@@ -10,21 +10,70 @@ adapting to a different chemistry or model is a one-file edit.
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
-# CLI on Linux with socketcan (Pi, etc.)
-python3 charger_app.py read
-
-# Web UI on Linux with socketcan
-python3 charger_web.py
-# then open http://localhost:8080
-
-# Web UI on macOS or any machine without CAN hardware (simulated charger)
-python3 charger_web.py --demo
 ```
 
-### Windows
+Then pick your platform below. **SocketCAN (`can0`) is Linux-only.** On
+macOS and Windows you either run **`--demo`** (simulated charger) or talk
+to a USB-CAN adapter with the matching python-can backend (`slcan`,
+`gs_usb`, `pcan`, …).
+
+## macOS
+
+| Goal | How |
+|------|-----|
+| **UI / dev, no hardware** | Docker **or** native `--demo` (see below) |
+| **Real charger over USB-CAN** | **Native Python on the Mac** — not Docker |
+
+### Docker (demo only)
+
+Docker Desktop on macOS **cannot** pass through USB serial devices
+(`/dev/cu.usbmodem…`). Use the demo profile:
+
+```bash
+docker compose --profile demo up --build
+# → http://localhost:8080
+```
+
+### Native — simulated charger
+
+```bash
+python3 charger_web.py --demo
+# → http://localhost:8080
+```
+
+### Native — real USB-CAN adapter
+
+macOS names serial ports **`/dev/cu.usbmodem…`** (use the `cu.*` device,
+not `tty.*`). There is no `/dev/ttyACM0` — that path is Linux.
+
+Find your device after plugging in the adapter:
+
+```bash
+ls /dev/cu.usb*
+```
+
+Probe the bus, then start the web UI (default bitrate **250000** for NPB):
+
+```bash
+python3 charger_app.py \
+  --interface slcan \
+  --channel /dev/cu.usbmodem207838884D4D1 \
+  check
+
+python3 charger_web.py \
+  --interface slcan \
+  --channel /dev/cu.usbmodem207838884D4D1 \
+  --bitrate 250000
+# → http://localhost:8080  →  click "Reload from charger"
+```
+
+Do **not** run `slcand` on macOS for this app — python-can opens the
+serial port directly. If `slcan` fails, your stick may use another
+backend (e.g. `--interface gs_usb` for candleLight firmware).
+
+## Windows
 
 The web UI and CLI run on Windows. **SocketCAN (`socketcan`) is Linux-only**, so on
 Windows you have three practical options:
@@ -52,50 +101,58 @@ Windows you have three practical options:
 3. **WSL2 + Linux** — run the app inside WSL with SocketCAN or USB passthrough
    if you need the same `can0` workflow as a Pi.
 
-Docker Desktop on Windows can run the **`demo`** compose profile; the **`charger`**
-(host SocketCAN) profile still requires a Linux host with `can0`.
+Docker Desktop on Windows can run the **`demo`** profile only; real CAN
+profiles need a Linux host (see [Docker](#docker)).
+
+## Linux
+
+Default backend is **SocketCAN** (`can0`). Bring the interface up, then
+run the CLI or web UI:
+
+```bash
+# Native CAN (Pi MCP2515, Jetson, PEAK kernel driver, …)
+sudo ip link set can0 up type can bitrate 250000
+
+# Or USB-CAN via slcand (Canable, CANtact, …) — creates can0 on Linux
+sudo slcand -o -c -s5 /dev/ttyACM0 can0   # -s5 = 250 kbit/s
+sudo ip link set can0 up
+
+python3 charger_app.py read
+python3 charger_web.py
+# → http://localhost:8080
+```
 
 ## Docker
 
-A small Python image is included.  Three compose profiles cover the
-common deployment shapes:
+Three compose profiles; **only `demo` works on macOS / Windows**.
+
+| Profile | Host | Needs |
+|---------|------|--------|
+| **`demo`** | macOS, Windows, Linux | Nothing — simulated charger |
+| **`charger`** | Linux only | `can0` up on the host (see Linux above) |
+| **`usb-can`** | Linux only | USB tty passthrough (e.g. `/dev/ttyACM0`) |
 
 ```bash
-# 1. Demo / dev — no CAN hardware needed, runs anywhere (incl. macOS).
+# Demo — use this on macOS (and anywhere without CAN hardware)
 docker compose --profile demo up --build
-# -> http://localhost:8080
+# → http://localhost:8080
 
-# 2. SocketCAN on a Linux host (kernel-native CAN driver, OR a USB-CAN
-#    adapter already wrapped into can0 via slcand).  The container uses
-#    host networking to share the host's can0 interface.
-#
-#    a) Native CAN (Raspberry Pi MCP2515, BeagleBone, Jetson, PEAK PCAN…)
-sudo ip link set can0 up type can bitrate 250000
-#
-#    b) USB-CAN via slcand (Canable, CANtact, generic slcan firmware)
-sudo slcand -o -c -s5 /dev/ttyACM0 can0   # -s5 = 250 kbit/s
-sudo ip link set can0 up
-#
-#    Then the same compose command for either (a) or (b):
+# Linux: SocketCAN (can0 must already exist on the host)
 docker compose --profile charger up -d --build
-# overrides via env: NPB_CHANNEL=can1 NPB_BITRATE=500000 NPB_CAN_ID=0xC0103
+# env: NPB_CHANNEL=can0  NPB_BITRATE=250000  NPB_CAN_ID=0xC0103
 
-# 3. USB-CAN adapter with NO host-side slcand — python-can speaks the
-#    slcan protocol directly over the tty.  Mutually exclusive with the
-#    'charger' USB-CAN setup above: don't run slcand if you use this
-#    profile (it would hold the tty open).  Works on macOS too.
+# Linux: USB-CAN without slcand (python-can slcan backend inside container)
 NPB_USB_DEVICE=/dev/ttyACM0 NPB_USB_INTERFACE=slcan \
   docker compose --profile usb-can up -d --build
 ```
 
-In short: profile **`charger`** wants `can0` to already exist as a real
-SocketCAN interface (you set it up however you like — native driver,
-slcand, vcan); profile **`usb-can`** wants a raw `/dev/tty*` it can
-drive itself via python-can's `slcan` backend.  Both end up talking to
-the same physical CAN bus.
+Profile **`charger`** uses host networking and talks to **`can0`**. Profile
+**`usb-can`** maps a host **`/dev/tty*`** into the container — do not run
+`slcand` on that same device at the same time. Both profiles require
+**Linux**; Docker Desktop on Mac/Windows does not expose USB serial devices
+reliably enough for **`usb-can`**.
 
-The image is non-root, ~80 MB, and `docker compose ... up` will rebuild
-on source changes.  See `docker-compose.yml` for tunable env vars.
+The image is non-root, ~80 MB. See `docker-compose.yml` for env vars.
 
 ## Command-line interface
 
@@ -126,11 +183,11 @@ or `0x...` hex.  Use `--no-cycle` to skip the OFF/ON wrapping.
 ### CAN options (CLI and web)
 
 ```
---channel can0          SocketCAN channel name or device path (default: can0)
+--channel can0          SocketCAN name (Linux) or device path (USB backends)
 --bitrate 250000        CAN bitrate (default: 250000)
 --can-id 0xC0103        29-bit CAN arbitration ID (default: 0xC0103)
---interface socketcan   python-can backend.  On macOS use a USB-CAN adapter:
-                        slcan, gs_usb, pcan, kvaser, etc.
+--interface socketcan   python-can backend (default). USB adapters: slcan,
+                        gs_usb, pcan, kvaser, … — see platform sections above.
 ```
 
 ## Web UI
@@ -148,10 +205,10 @@ live-telemetry panel.  Four sections, top to bottom:
 1. **Preview charge curve** — live SVG mirror of the manual's 3-stage
    diagram (page 44).  Stages labelled *bulk / absorption / float*;
    voltage and current axes with rotated titles; charcoal + slate
-   curves.  The plot and settings table start empty; after **5 seconds**
-   or when you click **Reload from charger**, suggested 16S LFP defaults
-   (or values read from the unit) fill in.  Annotation pills and a
-   traveller dot follow once CC, CV, FV, and TC are available.
+   curves.  On **real hardware**, the plot stays empty until **Reload from
+   charger**. In **`--demo`**, a suggested 16S LFP preview may appear after
+   5 s if auto-reload has not finished yet. Annotation pills and a traveller
+   dot follow once CC, CV, FV, and TC are available.
 2. **Settings charge curve** — editable table + friendly `curve_config`
    checkboxes + optional raw-hex editor for power users.  **Apply**
    opens a confirmation modal listing every change and whether the
@@ -230,21 +287,6 @@ from typing `0`, which is a real value the firmware interprets specially
 for a timeout register with a `60` minimum, typing `0` is rejected as
 out-of-range).
 
-### macOS / hardware-free testing (`--demo`)
-
-`socketcan` is Linux-only, so the default mode won't work on macOS.  Use
-`--demo` to run against an in-process simulated charger:
-
-```bash
-python3 charger_web.py --demo
-```
-
-The `FakeBus` class in `charger_web.py` answers reads with realistic
-values that drift slightly between polls when the output is on, and
-accepts writes that round-trip through in-memory state.  All endpoints
-behave identically to the real hardware, so the UI can be developed and
-tested without anything attached.
-
 ### Static preview (`preview.html`)
 
 The mock UI uses `preview-mock.js` and does not talk to CAN even when
@@ -297,13 +339,9 @@ Path("static/js/preview-data.js").write_text(
 PY
 ```
 
-When you're ready to drive a real charger from a Mac, get a USB-CAN
-adapter (Canable / Geschwister Schneider / PEAK / Kvaser) and run with
-the matching python-can backend:
-
-```bash
-python3 charger_web.py --interface slcan --channel /dev/tty.usbmodem1101
-```
+The **`--demo`** / **`FakeBus`** path (native or Docker) simulates a
+charger in-process for UI development — see [macOS](#macos) and
+[Docker](#docker).
 
 ## Files
 

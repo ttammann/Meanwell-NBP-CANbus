@@ -26,9 +26,7 @@ services:
   charger:
     build: .
     container_name: npb-charger
-    # host networking is the simplest way to expose a SocketCAN interface
-    # (can0, etc.) to the container. macOS / Windows users: use the demo
-    # profile, or mount a USB-CAN device in instead (see usb-can profile).
+    # macOS / Windows: use the demo profile. Real CAN profiles need Linux.
     network_mode: host
     cap_add:
       - NET_ADMIN
@@ -50,9 +48,7 @@ services:
     restart: unless-stopped
     profiles: ["charger"]
 
-  # USB-CAN adapter (Canable / slcan / gs_usb) without host networking.
-  # Pass the tty device through and pick the right --interface for the
-  # adapter firmware.
+  # USB-CAN on Linux: pass the host tty through (not supported on Docker Desktop for Mac).
   usb-can:
     build: .
     container_name: npb-charger-usb
