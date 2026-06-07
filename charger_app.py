@@ -349,16 +349,6 @@ class MeanWellCharger:
     # (~175 ms instead of ~350 ms blocking _lock in the request handler).
     INTER_WRITE_DELAY_S = 0.025
 
-    # How long to hold the output ON during the commit pulse on the
-    # was_on=False path (output started OFF).  This is NOT command spacing
-    # (INTER_WRITE_DELAY_S) — it's the dwell the firmware needs after the
-    # OFF->ON edge to latch B0..B9 into the read-back register.  25 ms was
-    # too short: CVTSSE ("Enter float after CV") committed to RAM but
-    # reverted on the next read when the output dropped back to OFF before
-    # the latch completed.  500 ms is comfortably above what was observed
-    # to be needed; tune down if you want a snappier OFF-start Apply.
-    COMMIT_PULSE_S = 0.5
-
     def write_many(self, settings, cycle=True):
         """Write a list of (name, value) settings.
 
@@ -419,10 +409,7 @@ class MeanWellCharger:
                 # current after a settings tweak.
                 self.set_on()
                 if not was_on:
-                    # Hold ON long enough for the firmware to latch B0..B9
-                    # (notably CVTSSE) before dropping back to OFF — a single
-                    # 25 ms command gap is too short and the bit reverts.
-                    time.sleep(self.COMMIT_PULSE_S)
+                    time.sleep(self.INTER_WRITE_DELAY_S)
                     self.set_off()
         return was_on
 
